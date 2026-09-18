@@ -220,6 +220,23 @@ Passed!  - Failed: 0, Passed: 13, Skipped: 0, Total: 13, Duration: 88 ms
 
 ---
 
+## Ecosystem Cross-References
+
+`Glacier.Clavier` integrates seamlessly with the broader **Glacier .NET 10 High-Performance Ecosystem**:
+- **[Glacier.Inference](https://github.com/ian-cowley/Glacier.Inference)**: Universal in-process LLM inference engine providing unmasked bidirectional state representation embeddings.
+- **[Glacier.Tensor](https://github.com/ian-cowley/Glacier.Tensor)**: Strided tensor mathematics, Autograd engine, Brier score loss, and probability calibration layers.
+- **[Glacier.Gpu](https://github.com/ian-cowley/Glacier.Gpu)**: Bare-metal GPU/APU acceleration (AMD ROCm/HIP zero-copy unified memory, NVIDIA CUDA, Direct3D 12, Vulkan).
+- **[Glacier.Rag](https://github.com/ian-cowley/Glacier.Rag)**: Ultra-fast GraphRAG engine combining forward-star CSR graph traversal and SIMD vector scans in a single memory space.
+- **[Glacier.Polaris](https://github.com/ian-cowley/Glacier.Polaris)**: Arrow columnar DataFrame engine for high-throughput state telemetry ingestion.
+
+---
+
+## Credits
+
+Developed by Ian Cowley and Antigravity (Google DeepMind).
+
+---
+
 ## License
 
 Licensed under the [MIT License](LICENSE).  
