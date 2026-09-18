@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>preview</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TieredPGO>true</TieredPGO>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <NoWarn>$(NoWarn);CS1591;CS8981</NoWarn>
+
+    <!-- NuGet Package Properties -->
+    <PackageId>Glacier.Clavier</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Ian Cowley</Authors>
+    <Company>Glacier High-Performance Ecosystem</Company>
+    <Description>High-throughput native C# .NET 10 System-1 discrete decision and policy engine. Evaluates structured environment states and predicts calibrated action logits in a single forward pass without autoregressive decoding.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/ian-cowley/Glacier.Clavier</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ian-cowley/Glacier.Clavier.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>system-1;decision-engine;policy;inference;neural;reinforcement-learning;csharp;net10;glacier</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\Glacier.Tensor\src\Glacier.Tensor\Glacier.Tensor.csproj" />
+    <ProjectReference Include="..\..\..\Glacier.Gpu\src\Glacier.Gpu\Glacier.Gpu.csproj" />
+    <ProjectReference Include="..\..\..\Glacier.Inference\src\Glacier.Inference\Glacier.Inference.csproj" />
+  </ItemGroup>
+</Project>
