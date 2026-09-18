@@ -328,13 +328,12 @@ public sealed class ClavierSession : IDisposable
             dst[idx] += 1.0f;
         }
 
-        // L2 Normalize
-        float sumSq = 0f;
-        for (int i = 0; i < dim; i++) sumSq += dst[i] * dst[i];
+        // Vectorized L2 Normalize
+        float sumSq = SimdKernels.SumOfSquares(dst);
         if (sumSq > 0f)
         {
             float inv = 1.0f / MathF.Sqrt(sumSq);
-            for (int i = 0; i < dim; i++) dst[i] *= inv;
+            SimdKernels.Multiply(dst, inv);
         }
     }
 

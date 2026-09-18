@@ -90,29 +90,24 @@ public sealed class ClavierDecisionHead : IDisposable
 
         // 1. Dense Layer 1: hidden = ReLU(W1^T * state + b1)
         hiddenBuffer.Slice(0, _hiddenDim).Clear();
+        var stateSlice = stateEmbedding.Slice(0, _inputDim);
         for (int h = 0; h < _hiddenDim; h++)
         {
-            float acc = _b1[h];
-            int wOffset = h * _inputDim;
-            for (int d = 0; d < _inputDim; d++)
-            {
-                acc += stateEmbedding[d] * _w1[wOffset + d];
-            }
+            ReadOnlySpan<float> wRow = _w1.AsSpan(h * _inputDim, _inputDim);
+            float dot = SimdKernels.Dot(stateSlice, wRow);
+            float acc = dot + _b1[h];
             hiddenBuffer[h] = MathF.Max(0.0f, acc); // ReLU
         }
 
         // 2. Dense Layer 2: logits = (W2^T * hidden + b2) / Temperature
         float invT = 1.0f / _temperature;
         float maxLogit = float.NegativeInfinity;
+        var hiddenSlice = hiddenBuffer.Slice(0, _hiddenDim);
         for (int a = 0; a < actions; a++)
         {
-            float acc = _b2[a];
-            int wOffset = a * _hiddenDim;
-            for (int h = 0; h < _hiddenDim; h++)
-            {
-                acc += hiddenBuffer[h] * _w2[wOffset + h];
-            }
-            float scaled = acc * invT;
+            ReadOnlySpan<float> wRow = _w2.AsSpan(a * _hiddenDim, _hiddenDim);
+            float dot = SimdKernels.Dot(hiddenSlice, wRow);
+            float scaled = (dot + _b2[a]) * invT;
             logitsBuffer[a] = scaled;
             if (scaled > maxLogit)
             {

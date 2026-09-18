@@ -83,26 +83,22 @@ public sealed class ClavierScoreHead
 
         // 1. Dense Layer 1: hidden = ReLU(W1^T * state + b1)
         hiddenBuffer.Slice(0, _hiddenDim).Clear();
+        var stateSlice = stateEmbedding.Slice(0, _inputDim);
         for (int h = 0; h < _hiddenDim; h++)
         {
-            float acc = _b1[h];
-            int wOffset = h * _inputDim;
-            for (int d = 0; d < _inputDim; d++)
-            {
-                acc += stateEmbedding[d] * _w1[wOffset + d];
-            }
+            ReadOnlySpan<float> wRow = _w1.AsSpan(h * _inputDim, _inputDim);
+            float dot = SimdKernels.Dot(stateSlice, wRow);
+            float acc = dot + _b1[h];
             hiddenBuffer[h] = MathF.Max(0.0f, acc); // ReLU
         }
 
         // 2. Value Projection: normalized in [0, 1] via temperature sigmoid
-        float valLogit = _bVal;
-        float confLogit = _bConf;
-        for (int h = 0; h < _hiddenDim; h++)
-        {
-            float hVal = hiddenBuffer[h];
-            valLogit += hVal * _wVal[h];
-            confLogit += hVal * _wConf[h];
-        }
+        var hiddenSlice = hiddenBuffer.Slice(0, _hiddenDim);
+        float valDot = SimdKernels.Dot(hiddenSlice, _wVal.AsSpan(0, _hiddenDim));
+        float confDot = SimdKernels.Dot(hiddenSlice, _wConf.AsSpan(0, _hiddenDim));
+
+        float valLogit = valDot + _bVal;
+        float confLogit = confDot + _bConf;
 
         float normVal = 1.0f / (1.0f + MathF.Exp(-valLogit / _temperature));
         float confidence = 1.0f / (1.0f + MathF.Exp(-confLogit));

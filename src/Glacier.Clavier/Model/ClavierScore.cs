@@ -5,10 +5,10 @@ using System.Runtime.InteropServices;
 
 /// <summary>
 /// Blittable 8-byte result for the Jev 'Score' continuous scalar evaluation primitive.
-/// Zero-copy transfer across PCIe / Unified Memory.
+/// Zero-copy transfer across PCIe / Unified Memory with natural alignment.
 /// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1, Size = 8)]
-public readonly struct ClavierScore
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct ClavierScore : IEquatable<ClavierScore>
 {
     private readonly float _value;
     private readonly float _confidence;
@@ -21,6 +21,14 @@ public readonly struct ClavierScore
         _value = value;
         _confidence = confidence;
     }
+
+    public bool Equals(ClavierScore other) =>
+        _value.Equals(other._value) && _confidence.Equals(other._confidence);
+
+    public override bool Equals(object? obj) => obj is ClavierScore other && Equals(other);
+    public override int GetHashCode() => HashCode.Combine(_value, _confidence);
+    public static bool operator ==(ClavierScore left, ClavierScore right) => left.Equals(right);
+    public static bool operator !=(ClavierScore left, ClavierScore right) => !left.Equals(right);
 
     public override string ToString() =>
         $"Score(Value: {Value:F2}, Conf: {Confidence * 100f:F1}%)";

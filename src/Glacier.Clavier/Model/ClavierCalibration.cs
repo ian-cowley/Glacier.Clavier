@@ -17,12 +17,20 @@ public static class ClavierCalibration
     {
         if (probabilities.Length != targets.Length)
             throw new ArgumentException($"Length mismatch: probabilities ({probabilities.Length}) != targets ({targets.Length}).");
+        if (probabilities.IsEmpty) return 0f;
+
+        Span<float> diff = stackalloc float[probabilities.Length <= 256 ? probabilities.Length : 0];
+        if (diff.Length > 0)
+        {
+            System.Numerics.Tensors.TensorPrimitives.Subtract(probabilities, targets, diff);
+            return SimdKernels.SumOfSquares(diff) / probabilities.Length;
+        }
 
         float sumSq = 0f;
         for (int i = 0; i < probabilities.Length; i++)
         {
-            float diff = probabilities[i] - targets[i];
-            sumSq += diff * diff;
+            float d = probabilities[i] - targets[i];
+            sumSq += d * d;
         }
         return sumSq / probabilities.Length;
     }

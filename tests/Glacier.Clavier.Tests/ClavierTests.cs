@@ -224,4 +224,32 @@ public class ClavierTests
             Assert.Equal(single.Confidence, batchScores[i].Confidence, 4);
         }
     }
+
+    [Fact]
+    public void ClavierNoul_NaturalAlignment_HasNoPackingHoles()
+    {
+        Assert.Equal(8, Marshal.SizeOf<ClavierNoul>());
+        Assert.Equal(8, System.Runtime.CompilerServices.Unsafe.SizeOf<ClavierNoul>());
+
+        var noul = new ClavierNoul(true, 0.85f);
+        Assert.True(noul.IsAffirmative);
+        Assert.Equal(0.85f, noul.Probability);
+    }
+
+    [Fact]
+    public void SimdKernels_DotProduct_MatchesScalarCalculation()
+    {
+        float[] v1 = new float[768];
+        float[] v2 = new float[768];
+        float expected = 0f;
+        for (int i = 0; i < 768; i++)
+        {
+            v1[i] = (i % 17) - 8.0f;
+            v2[i] = (i % 13) * 0.5f;
+            expected += v1[i] * v2[i];
+        }
+
+        float actual = SimdKernels.Dot(v1, v2);
+        Assert.True(MathF.Abs(expected - actual) < 1e-2f, $"SIMD dot ({actual}) must match scalar ({expected})");
+    }
 }

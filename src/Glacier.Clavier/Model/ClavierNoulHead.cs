@@ -75,24 +75,18 @@ public sealed class ClavierNoulHead
 
         // 1. Dense Layer 1: hidden = ReLU(W1^T * state + b1)
         hiddenBuffer.Slice(0, _hiddenDim).Clear();
+        var stateSlice = stateEmbedding.Slice(0, _inputDim);
         for (int h = 0; h < _hiddenDim; h++)
         {
-            float acc = _b1[h];
-            int wOffset = h * _inputDim;
-            for (int d = 0; d < _inputDim; d++)
-            {
-                acc += stateEmbedding[d] * _w1[wOffset + d];
-            }
+            ReadOnlySpan<float> wRow = _w1.AsSpan(h * _inputDim, _inputDim);
+            float dot = SimdKernels.Dot(stateSlice, wRow);
+            float acc = dot + _b1[h];
             hiddenBuffer[h] = MathF.Max(0.0f, acc); // ReLU
         }
 
         // 2. Output Projection: logit = (w2^T * hidden + b2) / Temperature
-        float logit = _b2;
-        for (int h = 0; h < _hiddenDim; h++)
-        {
-            logit += hiddenBuffer[h] * _w2[h];
-        }
-        logit /= _temperature;
+        float dot2 = SimdKernels.Dot(hiddenBuffer.Slice(0, _hiddenDim), _w2.AsSpan(0, _hiddenDim));
+        float logit = (dot2 + _b2) / _temperature;
 
         // 3. Calibrated Sigmoid
         float prob = 1.0f / (1.0f + MathF.Exp(-logit));
