@@ -2,9 +2,11 @@
 
 # ⚡ Glacier.Clavier
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Native AOT](https://img.shields.io/badge/Native%20AOT-Ready-brightgreen.svg)](https://learn.microsoft.com/dotnet/core/deploying/native-aot/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![NuGet Version](https://img.shields.io/nuget/v/Glacier.Clavier.svg)](https://www.nuget.org/packages/Glacier.Clavier/)
+[![Ecosystem](https://img.shields.io/badge/Glacier-Ecosystem-blue)](https://github.com/ian-cowley)
 [![Build & Test](https://github.com/ian-cowley/Glacier.Clavier/actions/workflows/publish-nuget.yml/badge.svg)](https://github.com/ian-cowley/Glacier.Clavier/actions/workflows/publish-nuget.yml)
 [![Zero Python](https://img.shields.io/badge/Dependencies-Zero%20Python%20%7C%20Zero%20C%2B%2B-blue.svg)]()
 
