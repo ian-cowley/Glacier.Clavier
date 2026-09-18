@@ -3,7 +3,12 @@ namespace Glacier.Clavier.Engine;
 using System;
 using System.Diagnostics;
 using Glacier.Clavier.Model;
-using Glacier.Inference.Engine;
+
+/// <summary>
+/// Delegate for extracting state representation vectors into caller-provided float spans.
+/// Compatible with Glacier.Inference, ONNX, and custom embedding models.
+/// </summary>
+public delegate void ClavierStateEncoder(ReadOnlySpan<char> text, Span<float> destination);
 
 /// <summary>
 /// High-throughput execution session for sub-millisecond System-1 discrete policy inference.
@@ -14,7 +19,7 @@ public sealed class ClavierSession : IDisposable
     private readonly ClavierDecisionHead _decisionHead;
     private readonly ClavierNoulHead _noulHead;
     private readonly ClavierScoreHead _scoreHead;
-    private readonly InferenceSession? _encoderSession;
+    private readonly ClavierStateEncoder? _encoder;
     private readonly int _embeddingDim;
     private readonly int _numActions;
     private readonly float[] _stateEmbBuffer;
@@ -42,11 +47,11 @@ public sealed class ClavierSession : IDisposable
         int hiddenDim = 256,
         int numActions = 64,
         float temperature = 1.0f,
-        InferenceSession? encoderSession = null)
+        ClavierStateEncoder? encoder = null)
     {
         _embeddingDim = embeddingDim;
         _numActions = numActions;
-        _encoderSession = encoderSession;
+        _encoder = encoder;
         _decisionHead = new ClavierDecisionHead(embeddingDim, hiddenDim, numActions, temperature);
         _noulHead = new ClavierNoulHead(embeddingDim, hiddenDim, temperature);
         _scoreHead = new ClavierScoreHead(embeddingDim, hiddenDim, temperature);
@@ -299,9 +304,9 @@ public sealed class ClavierSession : IDisposable
 
     private void ExtractStateEmbedding(ReadOnlySpan<char> text, Span<float> destination)
     {
-        if (_encoderSession != null)
+        if (_encoder != null)
         {
-            _encoderSession.ExtractEmbedding(text, destination, PoolingStrategy.MeanPooling);
+            _encoder(text, destination);
         }
         else
         {
