@@ -1,3 +1,5 @@
+![Glacier.Clavier Banner](assets/banner.jpg)
+
 # ⚡ Glacier.Clavier
 
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
