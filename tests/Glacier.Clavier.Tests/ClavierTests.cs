@@ -5,8 +5,6 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Glacier.Clavier.Engine;
 using Glacier.Clavier.Model;
-using Glacier.Tensor.Core;
-using Glacier.Tensor.Losses;
 using Xunit;
 
 public class ClavierTests
@@ -97,32 +95,21 @@ public class ClavierTests
     [Fact]
     public void BrierScoreLoss_ComputesZero_OnPerfectPredictions()
     {
-        // 1 sample, 3 classes, huge logit for class 1
-        var logits = new Tensor<float>(new[] { 1, 3 });
-        logits.AsSpan()[0] = -100f;
-        logits.AsSpan()[1] = 100f;
-        logits.AsSpan()[2] = -100f;
+        float[] probabilities = [0.0f, 1.0f, 0.0f];
+        float[] targets = [0.0f, 1.0f, 0.0f];
 
-        var target = new Tensor<float>(new[] { 1, 3 });
-        target.AsSpan()[0] = 0f;
-        target.AsSpan()[1] = 1f;
-        target.AsSpan()[2] = 0f;
-
-        var (loss, _) = LossFunctions.BrierScoreLoss(logits, target);
+        float loss = ClavierCalibration.BrierScore(probabilities, targets);
         Assert.True(loss < 1e-5f, $"Perfect prediction Brier score must be near 0, got {loss}");
     }
 
     [Fact]
     public void CategoricalCrossEntropy_LabelSmoothing_SmoothsDistribution()
     {
-        var logits = new Tensor<float>(new[] { 1, 4 });
-        logits.AsSpan().Fill(0f);
+        float[] logits = [0f, 0f, 0f, 0f];
+        float[] target = [1f, 0f, 0f, 0f];
 
-        var target = new Tensor<float>(new[] { 1, 4 });
-        target.AsSpan()[0] = 1f;
-
-        var (lossUnsmoothed, _) = LossFunctions.CategoricalCrossEntropyLoss(logits, target, labelSmoothing: 0.0f);
-        var (lossSmoothed, _) = LossFunctions.CategoricalCrossEntropyLoss(logits, target, labelSmoothing: 0.1f);
+        float lossUnsmoothed = ClavierCalibration.CategoricalCrossEntropy(logits, target, labelSmoothing: 0.0f);
+        float lossSmoothed = ClavierCalibration.CategoricalCrossEntropy(logits, target, labelSmoothing: 0.1f);
 
         // When logits are all 0 (uniform), cross-entropy equals log(4) regardless of smoothing
         Assert.True(MathF.Abs(lossUnsmoothed - MathF.Log(4f)) < 1e-4f);
@@ -136,7 +123,7 @@ public class ClavierTests
         int[] predictions = [1, 1, 1, 0]; // 3 correct out of 4 -> accuracy = 0.75
         int[] groundTruth = [1, 1, 1, 1];
 
-        float ece = LossFunctions.ExpectedCalibrationError(confidences, predictions, groundTruth, numBins: 10);
+        float ece = ClavierCalibration.ExpectedCalibrationError(confidences, predictions, groundTruth, numBins: 10);
         // Avg conf in bin 9 is 0.9, avg acc is 0.75 -> gap = |0.75 - 0.90| = 0.15
         Assert.True(MathF.Abs(ece - 0.15f) < 1e-4f, $"ECE should be ~0.15, got {ece}");
     }

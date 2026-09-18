@@ -19,6 +19,5 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Glacier.Clavier\Glacier.Clavier.csproj" />
-    <ProjectReference Include="..\..\..\Glacier.Tensor\src\Glacier.Tensor\Glacier.Tensor.csproj" />
   </ItemGroup>
 </Project>
