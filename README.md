@@ -5,6 +5,7 @@
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Native AOT](https://img.shields.io/badge/Native%20AOT-Ready-brightgreen.svg)](https://learn.microsoft.com/dotnet/core/deploying/native-aot/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Build & Test](https://github.com/ian-cowley/Glacier.Clavier/actions/workflows/publish-nuget.yml/badge.svg)](https://github.com/ian-cowley/Glacier.Clavier/actions/workflows/publish-nuget.yml)
 [![Zero Python](https://img.shields.io/badge/Dependencies-Zero%20Python%20%7C%20Zero%20C%2B%2B-blue.svg)]()
 
 > **High-Throughput Native C# .NET 10 System-1 Discrete Decision & Policy Engine**  
