@@ -236,6 +236,15 @@ Passed!  - Failed: 0, Passed: 13, Skipped: 0, Total: 13, Duration: 88 ms
 
 ---
 
+## 🆕 What's New in v1.0.1
+
+- **`Vector512<float>` FMA intrinsics** in policy/score/verify forward loops — saturates AVX-512 FMA units on Zen 5 hardware.
+- **`SimdKernels` extracted to dedicated class** — enables kernel reuse across policy, score, and verify pipeline stages.
+- **`TensorPrimitives.Dot` for zero-overhead dot-product dispatch** — delegates to the best available hardware path with no virtual dispatch cost.
+- **15 tests** passing (100 %).
+
+---
+
 ## Credits
 
 Developed by Ian Cowley and Antigravity (Google DeepMind).
