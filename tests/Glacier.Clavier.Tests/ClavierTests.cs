@@ -252,4 +252,61 @@ public class ClavierTests
         float actual = SimdKernels.Dot(v1, v2);
         Assert.True(MathF.Abs(expected - actual) < 1e-2f, $"SIMD dot ({actual}) must match scalar ({expected})");
     }
+
+    [Fact]
+    public void ClavierSession_SupportsBrazilianPortuguese_Decide_Verify_Score()
+    {
+        using var session = new ClavierSession(embeddingDim: 768, hiddenDim: 256, numActions: 6);
+
+        // 1. Choice / Decide with Brazilian Portuguese actions and diacritics
+        string[] actions = ["AVANÇAR", "RECUAR", "RECARREGAR", "PROTEGER", "ATACAR", "AGUARDAR"];
+        string state = "Inimigo detectado a 15 metros. Munição esgotada, escudo em 85%. Nível de ameaça crítico.";
+
+        var decisionResult = session.DecideWithDistribution(state.AsSpan(), actions);
+        Assert.NotNull(decisionResult);
+        Assert.True(decisionResult.Decision.ActionId < (uint)actions.Length);
+        Assert.NotNull(decisionResult.ActionName);
+        Assert.Contains(decisionResult.ActionName, actions);
+        Assert.InRange(decisionResult.Decision.Confidence, 0.0f, 1.0f);
+
+        // 2. Noul / Verify with Brazilian Portuguese
+        string telemetry = "Latência do banco de dados aumentou para 850ms, utilização de memória em 96%, esgotamento de conexões.";
+        string hypothesis = "O sistema está passando por uma falha iminente de esgotamento de recursos.";
+
+        var noul = session.VerifyWithDetails(telemetry.AsSpan(), hypothesis.AsSpan(), threshold: 0.5f);
+        Assert.InRange(noul.Probability, 0.0f, 1.0f);
+        Assert.InRange(noul.Confidence, 0.0f, 1.0f);
+        Assert.Equal(noul.Probability >= 0.5f, noul.IsAffirmative);
+
+        // 3. Score with Brazilian Portuguese criteria
+        string roverState = "Telemetria do veículo autônomo: inclinação de 38 graus, derrapagem de 45%, bateria em 12%.";
+        string criteria = "Nível de risco de travessia do terreno acidentado";
+
+        var score = session.ScoreWithDetails(roverState.AsSpan(), criteria.AsSpan(), min: 0.0f, max: 100.0f);
+        Assert.InRange(score.Value, 0.0f, 100.0f);
+        Assert.InRange(score.Confidence, 0.0f, 1.0f);
+    }
+
+    [Fact]
+    public void ClavierSession_SupportsBrazilianPortuguese_WithCustomMultilingualEncoder()
+    {
+        bool encoderCalled = false;
+        ClavierStateEncoder multilingualEncoder = (ReadOnlySpan<char> text, Span<float> destination) =>
+        {
+            encoderCalled = true;
+            // Verify Brazilian Portuguese text is received intact with UTF-16 diacritics
+            Assert.Contains("atenção", text.ToString(), StringComparison.OrdinalIgnoreCase);
+            destination.Fill(0.05f);
+        };
+
+        using var session = new ClavierSession(embeddingDim: 768, hiddenDim: 256, numActions: 4, encoder: multilingualEncoder);
+
+        string[] actions = ["CONFIRMAR", "CANCELAR", "PAUSAR", "REINICIAR"];
+        string state = "Atenção: A operação requer autorização do administrador.";
+
+        var decision = session.Decide(state.AsSpan(), actions);
+        Assert.True(encoderCalled);
+        Assert.True(decision.ActionId < (uint)actions.Length);
+        Assert.InRange(decision.Confidence, 0.0f, 1.0f);
+    }
 }
