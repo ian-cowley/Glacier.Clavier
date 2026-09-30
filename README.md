@@ -99,6 +99,26 @@ The following metrics were empirically measured running `Glacier.Clavier.Demo` o
   [Score]  Latency: 111.8 µs (0.112 ms) | Throughput: 8,941 ratings/sec (8 bytes payload)
 ```
 
+### 3.2 Empirical Hardware Verification: Windows 11 (.NET 10 & RDNA 3.5 Unified APU)
+
+Measured running `Glacier.Clavier.Demo` on physical Windows 11 workstation (AMD Ryzen AI 9 HX 370 w/ Radeon 890M Graphics + NVIDIA RTX 4060):
+
+```
+[0/3] Probing Hardware Accelerators & Unified Memory Architecture...
+  -> AMD Accelerator Detected: AMD Radeon(TM) 890M Graphics
+  -> Microarchitecture:        RDNA 3.5 (gfx1150)
+  -> Device Type:              AmdIntegratedApu (Unified Memory: True)
+  -> Compute Units:            16 CUs
+  -> Addressable Host VRAM:    12.20 GB
+  -> Direct Host/GPU Sharing:  1.200 µs (0 ns PCIe Staging Penalty)
+  -> Unified Memory Bandwidth: 36.37 GB/s sustained (256 MB buffer)
+
+[BENCHMARK RESULTS (3,000 Live Inferences)]
+  [Choice] Latency:  14.4 µs (0.014 ms) | Throughput:  69,660 decisions/sec (8 bytes payload)
+  [Noul]   Latency:  14.7 µs (0.015 ms) | Throughput:  67,820 verifications/sec (8 bytes payload)
+  [Score]  Latency:   9.6 µs (0.010 ms) | Throughput: 104,423 ratings/sec (8 bytes payload)
+```
+
 ---
 
 ## 4. The Three Decision Primitives in C#
