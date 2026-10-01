@@ -10,7 +10,5 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Glacier.Clavier\Glacier.Clavier.csproj" />
-    <ProjectReference Include="..\..\..\Glavier.Gpu\src\Glacier.Gpu\Glacier.Gpu.csproj" Condition="Exists('..\..\..\Glavier.Gpu\src\Glacier.Gpu\Glacier.Gpu.csproj')" />
-    <ProjectReference Include="..\..\..\Glacier.Gpu\src\Glacier.Gpu\Glacier.Gpu.csproj" Condition="Exists('..\..\..\Glacier.Gpu\src\Glacier.Gpu\Glacier.Gpu.csproj')" />
   </ItemGroup>
 </Project>
