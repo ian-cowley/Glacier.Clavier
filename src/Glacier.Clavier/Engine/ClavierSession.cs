@@ -39,7 +39,7 @@ public sealed class ClavierSession : IDisposable
     public ClavierNoulHead NoulHead => _noulHead;
     public ClavierScoreHead ScoreHead => _scoreHead;
 
-    public float Temperature
+        public float Temperature
     {
         get => _decisionHead.Temperature;
         set
@@ -56,6 +56,165 @@ public sealed class ClavierSession : IDisposable
                 _rwLock.ExitWriteLock();
             }
         }
+    }
+
+    private float _conformalQuantile = 0.95f;
+    private float _conformalAlpha = 0.05f;
+    private float[]? _conformalCalibrationScores;
+
+    /// <summary>
+    /// Calibrated conformal non-conformity quantile threshold qHat in [0.0, 1.0].
+    /// Candidates are admitted to C(x) when 1 - P(y|x) &lt;= qHat &lt;=&gt; P(y|x) &gt;= 1 - qHat.
+    /// </summary>
+    public float ConformalQuantile
+    {
+        get => _conformalQuantile;
+        set => _conformalQuantile = Math.Clamp(value, 0.0f, 1.0f);
+    }
+
+    /// <summary>
+    /// Default significance level alpha in (0, 1). Default is 0.05 (95% marginal coverage).
+    /// </summary>
+    public float ConformalAlpha
+    {
+        get => _conformalAlpha;
+        set
+        {
+            if (value <= 0.0f || value >= 1.0f || float.IsNaN(value))
+                throw new ArgumentOutOfRangeException(nameof(value), "Alpha must be in (0, 1).");
+            _conformalAlpha = value;
+            if (_conformalCalibrationScores != null && _conformalCalibrationScores.Length > 0)
+            {
+                _conformalQuantile = ClavierCalibration.CalibrateQuantile(_conformalCalibrationScores, value);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Calibrates the session's conformal quantile threshold qHat from holdout non-conformity scores.
+    /// </summary>
+    public void CalibrateConformal(ReadOnlySpan<float> calibrationScores, float alpha = 0.05f)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        _rwLock.EnterWriteLock();
+        try
+        {
+            _conformalCalibrationScores = calibrationScores.ToArray();
+            _conformalAlpha = alpha;
+            _conformalQuantile = ClavierCalibration.CalibrateQuantile(calibrationScores, alpha);
+        }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Evaluates environment state against actions and constructs Split Conformal Prediction Set C(x).
+    /// Returns detailed prediction set with System-1 fast dispatch vs System-2 LLM escalation gating.
+    /// </summary>
+    public ClavierPredictionSet DecideConformalSet(
+        ReadOnlySpan<char> stateText,
+        float alpha = 0.05f,
+        ReadOnlySpan<string> candidateActions = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var sw = Stopwatch.StartNew();
+        int activeActions = !candidateActions.IsEmpty ? candidateActions.Length : _numActions;
+        var probs = new float[activeActions];
+
+        ClavierDecision decision;
+        float qHat;
+
+        _rwLock.EnterReadLock();
+        try
+        {
+            decision = DecideCore(stateText, candidateActions, probs);
+            qHat = (_conformalCalibrationScores != null && _conformalCalibrationScores.Length > 0 && MathF.Abs(alpha - _conformalAlpha) > 1e-5f)
+                ? ClavierCalibration.CalibrateQuantile(_conformalCalibrationScores, alpha)
+                : _conformalQuantile;
+        }
+        finally
+        {
+            _rwLock.ExitReadLock();
+        }
+
+        float tau = 1.0f - qHat; // Minimum probability threshold for inclusion
+        ulong actionMask = 0UL;
+        int count = 0;
+
+        uint[]? rentedMatched = null;
+        Span<uint> matchedSpan = activeActions <= 256
+            ? stackalloc uint[activeActions]
+            : (rentedMatched = ArrayPool<uint>.Shared.Rent(activeActions)).AsSpan(0, activeActions);
+
+        uint[] actionIds;
+        try
+        {
+            for (int a = 0; a < activeActions; a++)
+            {
+                if (probs[a] >= tau)
+                {
+                    matchedSpan[count++] = (uint)a;
+                    if (a < 64)
+                    {
+                        actionMask |= (1UL << a);
+                    }
+                }
+            }
+
+            actionIds = count > 0 ? matchedSpan[..count].ToArray() : [];
+        }
+        finally
+        {
+            if (rentedMatched != null)
+            {
+                ArrayPool<uint>.Shared.Return(rentedMatched);
+            }
+        }
+
+        string[]? actionNames = null;
+        if (!candidateActions.IsEmpty)
+        {
+            actionNames = new string[count];
+            for (int i = 0; i < count; i++)
+            {
+                uint id = actionIds[i];
+                actionNames[i] = id < (uint)candidateActions.Length ? candidateActions[(int)id] : id.ToString();
+            }
+        }
+
+        string? bestActionName = !candidateActions.IsEmpty && decision.ActionId < (uint)candidateActions.Length
+            ? candidateActions[(int)decision.ActionId]
+            : null;
+
+        ConformalEscalationReason escalation = count switch
+        {
+            1 => ConformalEscalationReason.None,
+            0 => ConformalEscalationReason.EmptyPredictionSet,
+            _ => ConformalEscalationReason.AmbiguousPredictionSet
+        };
+
+        sw.Stop();
+
+        return new ClavierPredictionSet
+        {
+            Count = count,
+            EscalationReason = escalation,
+            BestActionId = decision.ActionId,
+            BestActionName = bestActionName,
+            BestConfidence = decision.Confidence,
+            ActionIds = actionIds,
+            ActionNames = actionNames,
+            ActionMask = actionMask,
+            QuantileThreshold = qHat,
+            InclusionProbabilityThreshold = tau,
+            Alpha = alpha,
+            Probabilities = probs,
+            LatencyMs = sw.Elapsed.TotalMilliseconds
+        };
     }
 
     public ClavierSession(
@@ -507,7 +666,7 @@ public sealed class ClavierSession : IDisposable
     }
 
     /// <summary>
-    /// Saves all three calibrated head weights and temperature settings to a binary checkpoint stream.
+    /// Saves all three calibrated head weights, temperature settings, and conformal parameters to a binary checkpoint stream.
     /// </summary>
     public void SaveCheckpoint(Stream stream)
     {
@@ -519,10 +678,21 @@ public sealed class ClavierSession : IDisposable
         {
             using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
             writer.Write(0x52564C43u); // "CLVR"
-            writer.Write(1);           // format version
+            writer.Write(2);           // format version 2
             writer.Write(_embeddingDim);
             writer.Write(_hiddenDim);
             writer.Write(_numActions);
+            writer.Write(_conformalQuantile);
+            writer.Write(_conformalAlpha);
+            int calCount = _conformalCalibrationScores?.Length ?? 0;
+            writer.Write(calCount);
+            if (calCount > 0 && _conformalCalibrationScores != null)
+            {
+                for (int i = 0; i < calCount; i++)
+                {
+                    writer.Write(_conformalCalibrationScores[i]);
+                }
+            }
             _decisionHead.WriteWeights(writer);
             _noulHead.WriteWeights(writer);
             _scoreHead.WriteWeights(writer);
@@ -534,7 +704,7 @@ public sealed class ClavierSession : IDisposable
     }
 
     /// <summary>
-    /// Restores all three calibrated head weights and temperature settings from a binary checkpoint stream.
+    /// Restores all three calibrated head weights and conformal parameters from a binary checkpoint stream.
     /// </summary>
     public void LoadCheckpoint(Stream stream)
     {
@@ -549,13 +719,38 @@ public sealed class ClavierSession : IDisposable
             if (magic != 0x52564C43u)
                 throw new InvalidDataException("Invalid ClavierSession checkpoint magic header.");
             int ver = reader.ReadInt32();
-            if (ver != 1)
+            if (ver != 1 && ver != 2)
                 throw new InvalidDataException($"Unsupported ClavierSession checkpoint version {ver}.");
             int embDim = reader.ReadInt32();
             int hidDim = reader.ReadInt32();
             int actions = reader.ReadInt32();
             if (embDim != _embeddingDim || hidDim != _hiddenDim || actions != _numActions)
                 throw new InvalidDataException($"Checkpoint dimensions ({embDim},{hidDim},{actions}) do not match session ({_embeddingDim},{_hiddenDim},{_numActions}).");
+
+            if (ver == 1)
+            {
+                _conformalQuantile = 0.95f;
+                _conformalAlpha = 0.05f;
+                _conformalCalibrationScores = null;
+            }
+            else if (ver == 2)
+            {
+                _conformalQuantile = reader.ReadSingle();
+                _conformalAlpha = reader.ReadSingle();
+                int calCount = reader.ReadInt32();
+                if (calCount > 0)
+                {
+                    _conformalCalibrationScores = new float[calCount];
+                    for (int i = 0; i < calCount; i++)
+                    {
+                        _conformalCalibrationScores[i] = reader.ReadSingle();
+                    }
+                }
+                else
+                {
+                    _conformalCalibrationScores = null;
+                }
+            }
 
             _decisionHead.ReadWeights(reader);
             _noulHead.ReadWeights(reader);

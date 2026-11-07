@@ -13,7 +13,7 @@
 
     <!-- NuGet Package Properties -->
     <PackageId>Glacier.Clavier</PackageId>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
     <Description>High-throughput native C# .NET 10 System-1 discrete decision and policy engine. Evaluates structured environment states and candidate actions, trains online calibrated policy heads, and persists weights with zero reflection.</Description>
@@ -27,6 +27,10 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Glacier.Clavier.Tests" />
   </ItemGroup>
 
   <ItemGroup>

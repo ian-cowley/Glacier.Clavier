@@ -1,6 +1,7 @@
 namespace Glacier.Clavier.Model;
 
 using System;
+using System.Buffers;
 
 /// <summary>
 /// Mathematical calibration metrics and loss functions for System-1 decision heads.
@@ -117,5 +118,77 @@ public static class ClavierCalibration
         }
 
         return ece;
+    }
+
+    /// <summary>
+    /// Computes the empirical conformal non-conformity quantile qHat given calibration non-conformity scores
+    /// s_i in [0, 1] and significance level alpha in (0, 1):
+    /// qHat = Quantile( ceil((n + 1)(1 - alpha)) / n ).
+    /// Guarantees finite-sample coverage P(Y in C(X)) >= 1 - alpha under exchangeability.
+    /// </summary>
+    public static float CalibrateQuantile(ReadOnlySpan<float> scores, float alpha)
+    {
+        if (scores.IsEmpty)
+            throw new ArgumentException("Calibration scores cannot be empty.", nameof(scores));
+        if (alpha <= 0.0f || alpha >= 1.0f || float.IsNaN(alpha))
+            throw new ArgumentOutOfRangeException(nameof(alpha), alpha, "Significance level alpha must be in (0, 1).");
+
+        int n = scores.Length;
+        int k = (int)MathF.Ceiling((n + 1) * (1.0f - alpha));
+
+        // Finite-sample edge condition: if k > n, conservative coverage requires qHat = 1.0
+        // so that all candidate classes are admitted (C(x) = Y), forcing System-2 escalation.
+        if (k > n)
+        {
+            return 1.0f;
+        }
+
+        float[]? rented = null;
+        Span<float> sorted = n <= 512
+            ? stackalloc float[n]
+            : (rented = ArrayPool<float>.Shared.Rent(n)).AsSpan(0, n);
+
+        try
+        {
+            scores.CopyTo(sorted);
+            sorted.Sort();
+
+            int index = Math.Clamp(k - 1, 0, n - 1);
+            float qHat = sorted[index];
+            return Math.Clamp(qHat, 0.0f, 1.0f);
+        }
+        finally
+        {
+            if (rented != null)
+            {
+                ArrayPool<float>.Shared.Return(rented);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Computes canonical classification non-conformity scores s_i = 1 - P(y_i | x_i) across N samples.
+    /// </summary>
+    public static void ComputeNonConformityScores(
+        ReadOnlySpan<float> flatProbabilities,
+        ReadOnlySpan<int> groundTruthLabels,
+        int numClasses,
+        Span<float> destinationScores)
+    {
+        int n = groundTruthLabels.Length;
+        if (flatProbabilities.Length != n * numClasses)
+            throw new ArgumentException("flatProbabilities length must equal groundTruthLabels.Length * numClasses.");
+        if (destinationScores.Length < n)
+            throw new ArgumentException("destinationScores buffer is smaller than sample count.");
+
+        for (int i = 0; i < n; i++)
+        {
+            int label = groundTruthLabels[i];
+            if ((uint)label >= (uint)numClasses)
+                throw new ArgumentOutOfRangeException(nameof(groundTruthLabels), $"Label {label} at index {i} out of bounds for {numClasses} classes.");
+
+            float prob = flatProbabilities[i * numClasses + label];
+            destinationScores[i] = Math.Clamp(1.0f - prob, 0.0f, 1.0f);
+        }
     }
 }
