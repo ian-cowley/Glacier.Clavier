@@ -4,292 +4,95 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
-[![Native AOT](https://img.shields.io/badge/Native%20AOT-Ready-brightgreen.svg)](https://learn.microsoft.com/dotnet/core/deploying/native-aot/)
+[![Native AOT](https://img.shields.io/badge/Native%20AOT-100%25%20Trim%20Clean-brightgreen.svg)](https://learn.microsoft.com/dotnet/core/deploying/native-aot/)
 [![NuGet Version](https://img.shields.io/nuget/v/Glacier.Clavier.svg)](https://www.nuget.org/packages/Glacier.Clavier/)
 [![Ecosystem](https://img.shields.io/badge/Glacier-Ecosystem-blue)](https://github.com/ian-cowley)
 [![Build & Test](https://github.com/ian-cowley/Glacier.Clavier/actions/workflows/publish-nuget.yml/badge.svg)](https://github.com/ian-cowley/Glacier.Clavier/actions/workflows/publish-nuget.yml)
-[![Zero Python](https://img.shields.io/badge/Dependencies-Zero%20Python%20%7C%20Zero%20C%2B%2B-blue.svg)]()
-[![dev.to](https://img.shields.io/badge/dev.to-Read%20Article-black?logo=devdotto)](https://dev.to/iancowley/why-is-your-fast-system-1-ai-still-sitting-behind-an-http-call-jev-2g4e)
+[![Zero Python](https://img.shields.io/badge/Dependencies-Zero%20Python%20%7C%20Pure%20C%23%20SIMD-blue.svg)]()
 [![Website](https://img.shields.io/badge/Website-glaciersoftware.dev-66fcf1.svg)](https://glaciersoftware.dev/)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-orange.svg?logo=buy-me-a-coffee)](https://buymeacoffee.com/glaciersoftware)
 
 > **High-Throughput Native C# .NET 10 System-1 Discrete Decision & Policy Engine**  
-> *Non-autoregressive, calibrated decision primitives (`Choice`, `Noul`, `Score`) executed in sub-millisecond single forward passes directly in-process or bare-metal GPU/APU unified memory.*  
->  
-> 📰 **Featured Article:** [Why is your fast System-1 AI still sitting behind an HTTP call? (DEV.to)](https://dev.to/iancowley/why-is-your-fast-system-1-ai-still-sitting-behind-an-http-call-jev-2g4e)
+> *Non-autoregressive, calibrated decision primitives (`Choice`, `Noul`, `Score`), online supervised training, and binary checkpoint persistence executed in sub-millisecond forward passes.*
 
 ---
 
-## 1. Concept: System 1 vs. System 2 in Modern AI Stacks
+## 1. Overview: System-1 Calibrated Primitives
 
-Human cognition operates via two distinct modes (Daniel Kahneman, *Thinking, Fast and Slow*):
-* **System 2 (Generative LLMs):** Slow, sequential, token-by-token autoregressive reasoning (e.g., GPT-4o, Claude, DeepSeek-R1). Essential for open-ended synthesis, research, and long-form code generation, but burdened by multi-second latencies, variable output schemas, hallucinations, and high inference costs.
-* **System 1 (Glacier.Clavier):** Intuitive, instantaneous, parallel evaluation. It never generates conversational text or free-form JSON strings. Instead, it functions as a **strictly typed, mathematically calibrated decision function** for production systems.
+`Glacier.Clavier` provides strictly typed, mathematically calibrated System-1 decision heads with zero reflection (`System.Numerics.Tensors` SIMD accelerated):
 
-### Lineage and Similar Concepts
-The architectural philosophy of `Glacier.Clavier` traces its conceptual lineage to William Stanley Jevons’s historic 1869 *Logic Piano* (or *Clavier*)—the first mechanical machine to evaluate logical propositions in a single stroke—and shares core conceptual principles with modern System-1 decision engines in the AI industry (such as TypeSafe AI's **Jev**):
-1. **`Choice`**: Given structured or unstructured environment state and candidate options, selects the optimal discrete action and computes a calibrated probability distribution.
-2. **`Noul`**: Evaluates an assertion or hypothesis against state, outputting an affirmative/negative verdict with calibrated probability $p \in [0, 1]$ (essential for safety guardrails, policy adherence, and real-time validation).
-3. **`Score`**: Rates state against continuous criteria on a bounded scale $[min, max]$ with an epistemic certainty score (ideal for risk scoring, urgency classification, and priority ranking).
+1. **`Choice` (`Decide` / `DecideWithDistribution` / `TrainDecision`)**: Evaluates either fixed discrete action slots (`0..K-1`) or dynamic text candidate actions (jointly encoding `(state, candidateAction[i])` so action semantics directly determine logits regardless of list ordering) and emits a calibrated softmax probability distribution.
+2. **`Noul` (`Verify` / `VerifyWithDetails` / `TrainVerify`)**: Evaluates an assertion or hypothesis against state, outputting an affirmative/negative verdict with calibrated probability $p \in [0, 1]$.
+3. **`Score` (`Score` / `ScoreWithDetails` / `TrainScore`)**: Rates state against continuous criteria on a bounded scale $[\text{min}, \text{max}]$ with an epistemic certainty score.
 
 ---
 
-## 2. Theoretical & Architectural Speed Comparison
+## 2. Quickstart in C#
 
-> **Note on Comparisons**: Because closed, proprietary commercial services (such as Jev) operate as remote cloud APIs with no publicly accessible binary runtime, direct empirical head-to-head benchmarking is not possible. However, the performance differential can be analyzed with mathematical rigor through **first-principles systems architecture**.
-> 
-> 📖 **Read the deep dive on DEV.to:** [Why is your fast System-1 AI still sitting behind an HTTP call?](https://dev.to/iancowley/why-is-your-fast-system-1-ai-still-sitting-behind-an-http-call-jev-2g4e)
-
-### The Cloud API Topology vs. In-Process Native Topology
-
-When using a remote, cloud-hosted System-1 decision API, every decision pays a multi-layer serialization and networking tax:
-
-```
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                        REMOTE CLOUD API TOPOLOGY (Hosted SaaS)                         │
-├────────────────────────────────────────────────────────────────────────────────────────┤
-│ Application ──► JSON Serialize ──► TLS/TCP Handshake ──► WAN Transit ──► Cloud Gateway │
-│                                                                                 │      │
-│ Application ◄── JSON Parse ◄───── WAN Transit ◄───── Cloud GPU Forward ◄──────┘      │
-│                                                                                        │
-│ Cumulative Round-Trip Latency: 75 ms – 500 ms                                          │
-└────────────────────────────────────────────────────────────────────────────────────────┘
-
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                   IN-PROCESS NATIVE TOPOLOGY (Glacier.Clavier .NET 10)                 │
-├────────────────────────────────────────────────────────────────────────────────────────┤
-│ Application State ──► In-Process SIMD / APU Unified Memory ──► Parallel Forward Pass   │
-│                                                                         │              │
-│ 8-Byte Struct in Register (ActionId, Confidence) ◄──────────────────────┘              │
-│                                                                                        │
-│ Cumulative Turnaround Latency: 0.11 ms – 0.16 ms (110 µs – 160 µs)                     │
-└────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### First-Principles Latency Breakdown
-
-| Architectural Stage | Remote Cloud API (Typical) | Glacier.Clavier (In-Process .NET 10) |
-| :--- | :--- | :--- |
-| **Network Transit & TLS** | 20 – 100 ms (DNS, TCP handshake, WAN round-trip) | **0.00 ms** (In-process memory) |
-| **Data Marshaling / IPC** | 10 – 40 ms (JSON/Protobuf serialization & parsing) | **0.00 ms** (Zero-copy `ReadOnlySpan<char>`) |
-| **Gateway & Multi-Tenant Queue** | 15 – 80 ms (Cloud load balancer & thread scheduling) | **0.00 ms** (Direct thread execution) |
-| **GPU / APU Memory Ingestion** | 5 – 20 ms (PCIe staging copies from cloud host RAM) | **< 0.001 ms (0.7 µs)** (Unified APU / Pinned Host VRAM) |
-| **Neural Forward Pass** | 20 – 60 ms (Multi-tenant batch slicing) | **0.11 – 0.16 ms** (Dedicated SIMD / RDNA / CUDA kernels) |
-| **Result Retrieval** | 10 – 30 ms (HTTP response body transmission) | **0.00 ms** (8-byte blittable struct in CPU register) |
-| **Total Turnaround Time** | **~75 ms – 500 ms** | **~0.11 ms – 0.16 ms (110 – 160 µs)** |
-| **Theoretical Advantage** | *Baseline network-bound* | **~500× to 1,500× Lower Latency** |
-
-By embedding the decision head directly into your .NET 10 process, `Glacier.Clavier` delivers throughput of **6,000 to 9,000 decisions/second per device**, unlocking operational domains impossible over HTTP:
-* **Real-time game loops & agent behavior trees** (evaluating policies within a 16 ms / 60 FPS budget).
-* **Microsecond algorithmic trading & order routing** (triaging order book state changes in < 200 µs).
-* **High-frequency autonomous robotics & edge control** (operating with zero external WAN connectivity).
-* **Sub-millisecond multi-agent tool dispatching** (routing hundreds of tool invocations without network overhead).
-
----
-
-## 3. Empirical Hardware Verification: AMD Radeon 890M (Linux Box)
-
-The following metrics were empirically measured running `Glacier.Clavier.Demo` on a remote Linux host powered by an **AMD Ryzen AI 9 HX 370 w/ Radeon 890M Graphics (RDNA 3.5 `gfx1150`)** with 64GB Unified Memory and ROCm 7.2:
-
-```
-[0/3] Probing Hardware Accelerators & Unified Memory Architecture...
-  -> AMD Accelerator Detected: AMD Radeon 890M Graphics
-  -> Microarchitecture:        RDNA 3.5 (gfx1150)
-  -> Device Type:              AmdIntegratedApu (Unified Memory: True)
-  -> Addressable Host VRAM:    23.32 GB
-  -> Direct Host/GPU Sharing:  0.700 µs (0 ns PCIe Staging Penalty)
-  -> Unified Memory Bandwidth: 38.86 GB/s sustained
-
-[BENCHMARK RESULTS (3,000 Live Inferences)]
-  [Choice] Latency: 158.9 µs (0.159 ms) | Throughput: 6,293 decisions/sec (8 bytes payload)
-  [Noul]   Latency: 112.4 µs (0.112 ms) | Throughput: 8,900 verifications/sec (8 bytes payload)
-  [Score]  Latency: 111.8 µs (0.112 ms) | Throughput: 8,941 ratings/sec (8 bytes payload)
-```
-
-### 3.2 Empirical Hardware Verification: Windows 11 (.NET 10 & RDNA 3.5 Unified APU)
-
-Measured running `Glacier.Clavier.Demo` on physical Windows 11 workstation (AMD Ryzen AI 9 HX 370 w/ Radeon 890M Graphics + NVIDIA RTX 4060):
-
-```
-[0/3] Probing Hardware Accelerators & Unified Memory Architecture...
-  -> AMD Accelerator Detected: AMD Radeon(TM) 890M Graphics
-  -> Microarchitecture:        RDNA 3.5 (gfx1150)
-  -> Device Type:              AmdIntegratedApu (Unified Memory: True)
-  -> Compute Units:            16 CUs
-  -> Addressable Host VRAM:    12.20 GB
-  -> Direct Host/GPU Sharing:  1.200 µs (0 ns PCIe Staging Penalty)
-  -> Unified Memory Bandwidth: 36.37 GB/s sustained (256 MB buffer)
-
-[BENCHMARK RESULTS (3,000 Live Inferences)]
-  [Choice] Latency:  14.4 µs (0.014 ms) | Throughput:  69,660 decisions/sec (8 bytes payload)
-  [Noul]   Latency:  14.7 µs (0.015 ms) | Throughput:  67,820 verifications/sec (8 bytes payload)
-  [Score]  Latency:   9.6 µs (0.010 ms) | Throughput: 104,423 ratings/sec (8 bytes payload)
-```
-
----
-
-## 4. The Three Decision Primitives in C#
-
-### Primitive 1: `Choice` (Discrete Action Selection)
-
-Evaluates unstructured state against candidate actions and returns the winning action and calibrated confidence:
-
+### 2.1 Inference (`Choice`, `Noul`, `Score`)
 ```csharp
 using Glacier.Clavier.Engine;
 using Glacier.Clavier.Model;
 
 using var session = new ClavierSession(embeddingDim: 768, hiddenDim: 256, numActions: 8);
 
-string[] actions = 
-[
-    "ENGAGE_TARGET",
-    "TACTICAL_RETREAT",
-    "TAKE_COVER",
-    "RELOAD_WEAPON",
-    "DEPLOY_SHIELD",
-    "SCAN_PERIMETER",
-    "HOLD_POSITION",
-    "CALL_REINFORCEMENTS"
-];
+string[] actions = ["ENGAGE_TARGET", "RELOAD_WEAPON", "TAKE_COVER", "SCAN_PERIMETER"];
+string state = "Hostile unit spotted at 15m. Primary Ammo empty (0/30).";
 
-string state = "Hostile unit spotted at 15m. Armor at 92%, Primary Ammo empty (0/30). Sidearm ready.";
-
-// Evaluates in ~159 microseconds
+// 1. Choice (Discrete Action Selection)
 ClavierDecision decision = session.Decide(state.AsSpan(), actions);
 
-Console.WriteLine($"Selected Action: {actions[decision.ActionId]} (ID: {decision.ActionId})");
-Console.WriteLine($"Confidence     : {decision.Confidence * 100f:F1}%");
+// 2. Noul (Binary Hypothesis Verification)
+ClavierNoul alert = session.Verify(state.AsSpan(), "Immediate reload required".AsSpan(), threshold: 0.5f);
+
+// 3. Score (Bounded Continuous Rating)
+ClavierScore urgency = session.Score(state.AsSpan(), "Combat urgency".AsSpan(), min: 0.0f, max: 100.0f);
 ```
 
-### Primitive 2: `Noul` (Binary Hypothesis & Guardrail Verification)
-
-Evaluates whether a statement or assertion holds true in context, returning a probability $p \in [0, 1]$:
-
+### 2.2 Online Supervised Training & Binary Checkpoints (`v1.1.0`)
 ```csharp
-string telemetry = "Database query latency spikes to 850ms, memory utilization at 96%, thread pool exhausted.";
-string hypothesis = "System is experiencing imminent resource exhaustion failure.";
+// Supervised gradient updates across all 3 heads
+float choiceLoss = session.TrainDecision(state.AsSpan(), targetActionIndex: 1, actions, learningRate: 0.05f);
+float noulLoss   = session.TrainVerify(state.AsSpan(), "Immediate reload required".AsSpan(), targetAffirmative: true);
+float scoreLoss  = session.TrainScore(state.AsSpan(), "Combat urgency".AsSpan(), targetValue: 92.0f, min: 0.0f, max: 100.0f);
 
-// Evaluates in ~112 microseconds
-ClavierNoul result = session.Verify(telemetry.AsSpan(), hypothesis.AsSpan(), threshold: 0.5f);
+// Persist and reload calibrated weights
+using var fs = File.Create("policy.clvr");
+session.SaveCheckpoint(fs);
 
-if (result.IsAffirmative)
-{
-    Console.WriteLine($"[ALERT] Assertion Verified! (Prob: {result.Probability * 100f:F1}%, Certainty: {result.Confidence * 100f:F1}%)");
-}
-```
-
-### Primitive 3: `Score` (Continuous Scalar Rating)
-
-Rates the state against custom criteria across an arbitrary bounded interval $[min, max]$:
-
-```csharp
-string roverState = "Incline: 38 degrees, surface friction coefficient: 0.21, wheel slip: 45%, battery: 12%.";
-string criteria = "Terrain traversal hazard level";
-
-// Evaluates on scale [0.0, 100.0] in ~111 microseconds
-ClavierScore score = session.Score(roverState.AsSpan(), criteria.AsSpan(), min: 0.0f, max: 100.0f);
-
-Console.WriteLine($"Hazard Score: {score.Value:F1}/100.0 (Calibrated Confidence: {score.Confidence * 100f:F1}%)");
+fs.Position = 0;
+session.LoadCheckpoint(fs);
 ```
 
 ---
 
-## 5. Blittable 8-Byte Structs (Zero-Copy Transfers)
+## 3. Blittable 8-Byte Structs & Lock-Free Batching
 
-To eliminate GC pauses and GPU-to-host serialization bottlenecks, all three primitives emit blittable 8-byte structs that fit directly in machine registers:
+All three primitives emit 8-byte blittable structs (`Marshal.SizeOf<T>() == 8`) with lock-free concurrent forward execution across `DecideBatch`, `VerifyBatch`, and `ScoreBatch`:
 
 ```csharp
-[StructLayout(LayoutKind.Sequential, Pack = 1, Size = 8)]
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
 public readonly struct ClavierDecision // uint ActionId (4B) + float Confidence (4B)
 
-[StructLayout(LayoutKind.Sequential, Pack = 1, Size = 8)]
-public readonly struct ClavierNoul     // byte IsAffirmative (1B) + 3B padding + float Probability (4B)
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct ClavierNoul     // float Probability (4B) + byte Affirmative (1B + 3B natural align)
 
-[StructLayout(LayoutKind.Sequential, Pack = 1, Size = 8)]
+[StructLayout(LayoutKind.Sequential)]
 public readonly struct ClavierScore    // float Value (4B) + float Confidence (4B)
 ```
 
 ---
 
-## 6. High-Frequency Batching
-
-Process hundreds of independent states simultaneously with zero heap allocations on the hot path:
-
-```csharp
-ReadOnlyMemory<char>[] agentStates = FetchAgentFleetStates();
-Span<ClavierDecision> decisions = stackalloc ClavierDecision[agentStates.Length];
-
-// Batch-evaluates across entities in parallel
-session.DecideBatch(agentStates, decisions, actions);
-```
-
----
-
-## 7. Mathematical Calibration Layer
-
-Neural networks often produce uncalibrated probabilities (e.g., predicting 0.99 confidence when empirical accuracy is 0.70). `Glacier.Clavier` integrates three calibration layers from [`Glacier.Tensor`](https://github.com/ian-cowley/Glacier.Tensor):
-
-1. **Label Smoothing Cross-Entropy**: Penalizes overconfident output logits during training:
-   $$\mathcal{L}_{\text{smooth}} = (1 - \alpha)\mathcal{L}_{\text{CE}} + \alpha \frac{1}{K} \sum_{k} -\log p_k$$
-2. **Brier Score Loss**: Strictly proper quadratic scoring rule optimizing true probability calibration:
-   $$\text{BS} = \frac{1}{N} \sum_{i=1}^N \sum_{k=1}^K (p_{ik} - y_{ik})^2$$
-3. **Expected Calibration Error (ECE)**: Directly measures the gap between predicted confidence and empirical accuracy across binned reliability diagrams.
-
----
-
-## 8. Test Suite
-
-The solution includes 13 unit tests verifying blittable layouts, mathematical calibration, bounded ranges, batch equivalence, and sub-millisecond execution:
+## 4. Verification
 
 ```bash
+dotnet build Glacier.Clavier.slnx -c Release
 dotnet test Glacier.Clavier.slnx -c Release
-```
-
-Output:
-```text
-Passed!  - Failed: 0, Passed: 13, Skipped: 0, Total: 13, Duration: 88 ms
+python scripts/security_check.py Glacier.Clavier
 ```
 
 ---
 
-## Ecosystem Cross-References
+## Credits & License
 
-`Glacier.Clavier` integrates seamlessly with the broader **Glacier .NET 10 High-Performance Ecosystem**:
-- **[Glacier.Inference](https://github.com/ian-cowley/Glacier.Inference)**: Universal in-process LLM inference engine providing unmasked bidirectional state representation embeddings.
-- **[Glacier.Tensor](https://github.com/ian-cowley/Glacier.Tensor)**: Strided tensor mathematics, Autograd engine, Brier score loss, and probability calibration layers.
-- **[Glacier.Gpu](https://github.com/ian-cowley/Glacier.Gpu)**: Bare-metal GPU/APU acceleration (AMD ROCm/HIP zero-copy unified memory, NVIDIA CUDA, Direct3D 12, Vulkan).
-- **[Glacier.Rag](https://github.com/ian-cowley/Glacier.Rag)**: Ultra-fast GraphRAG engine combining forward-star CSR graph traversal and SIMD vector scans in a single memory space.
-- **[Glacier.Polaris](https://github.com/ian-cowley/Glacier.Polaris)**: Arrow columnar DataFrame engine for high-throughput state telemetry ingestion.
-
----
-
-## 🆕 What's New in v1.0.1
-
-- **`Vector512<float>` FMA intrinsics** in policy/score/verify forward loops — saturates AVX-512 FMA units on Zen 5 hardware.
-- **`SimdKernels` extracted to dedicated class** — enables kernel reuse across policy, score, and verify pipeline stages.
-- **`TensorPrimitives.Dot` for zero-overhead dot-product dispatch** — delegates to the best available hardware path with no virtual dispatch cost.
-- **15 tests** passing (100 %).
-
----
-
-## Credits
-
-Developed by Ian Cowley and Antigravity (Google DeepMind).
-
----
-
-## License
-
-Licensed under the [MIT License](LICENSE).  
-Copyright (c) 2026 Ian Cowley.
-
----
-
-## ❄️ Glacier Ecosystem & Support
-
-Part of the **[Glacier Ecosystem](https://glaciersoftware.dev/)** — high-performance, zero-allocation developer tooling and data engines natively built for modern C# and .NET 10.
-
-* 🌐 **Website & Documentation**: [glaciersoftware.dev](https://glaciersoftware.dev/)
-* ☕ **Buy Me a Coffee**: [buymeacoffee.com/glaciersoftware](https://buymeacoffee.com/glaciersoftware)
-* ❤️ **GitHub Sponsors**: [github.com/sponsors/ian-cowley](https://github.com/sponsors/ian-cowley)
-* 🐙 **All Repositories**: [github.com/ian-cowley](https://github.com/ian-cowley)
+Developed by **Ian Cowley** and **Antigravity (Google DeepMind)**. Licensed under the [MIT License](LICENSE).

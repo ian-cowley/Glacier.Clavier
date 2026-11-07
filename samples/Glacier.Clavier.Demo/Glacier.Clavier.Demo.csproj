@@ -6,9 +6,11 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>preview</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Glacier.Clavier\Glacier.Clavier.csproj" />
+    <PackageReference Include="Glacier.Gpu" Version="1.1.0" />
   </ItemGroup>
 </Project>

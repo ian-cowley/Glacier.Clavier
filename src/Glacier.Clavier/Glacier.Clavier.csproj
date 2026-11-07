@@ -5,17 +5,18 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>preview</LangVersion>
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <TieredPGO>true</TieredPGO>
-    <ServerGarbageCollection>true</ServerGarbageCollection>
     <NoWarn>$(NoWarn);CS1591;CS8981</NoWarn>
 
     <!-- NuGet Package Properties -->
     <PackageId>Glacier.Clavier</PackageId>
-    <Version>1.0.2</Version>
+    <Version>1.1.0</Version>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
-    <Description>High-throughput native C# .NET 10 System-1 discrete decision and policy engine. Evaluates structured environment states and predicts calibrated action logits in a single forward pass without autoregressive decoding.</Description>
+    <Description>High-throughput native C# .NET 10 System-1 discrete decision and policy engine. Evaluates structured environment states and candidate actions, trains online calibrated policy heads, and persists weights with zero reflection.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/ian-cowley/Glacier.Clavier</PackageProjectUrl>
     <RepositoryUrl>https://github.com/ian-cowley/Glacier.Clavier.git</RepositoryUrl>
@@ -30,7 +31,5 @@
 
   <ItemGroup>
     <PackageReference Include="System.Numerics.Tensors" Version="10.0.12" />
-    <PackageReference Include="Glacier.Tensor" Version="1.0.9" />
-    <PackageReference Include="Glacier.Gpu" Version="1.0.8" />
   </ItemGroup>
 </Project>
