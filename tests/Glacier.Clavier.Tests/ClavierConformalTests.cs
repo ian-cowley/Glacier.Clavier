@@ -221,4 +221,54 @@ public class ClavierConformalTests
             Assert.Contains(set.BestActionName, candidates);
         }
     }
+
+    [Fact]
+    public void DecideConformalSet_InvalidOrUncalibratedCustomAlpha_ThrowsOrScalesThresholdMonotonically()
+    {
+        using var session = new ClavierSession(embeddingDim: 64, hiddenDim: 32, numActions: 4);
+        Assert.Throws<ArgumentOutOfRangeException>(() => session.DecideConformalSet("test".AsSpan(), alpha: 0f));
+        Assert.Throws<ArgumentOutOfRangeException>(() => session.DecideConformalSet("test".AsSpan(), alpha: 1f));
+        Assert.Throws<ArgumentOutOfRangeException>(() => session.DecideConformalSet("test".AsSpan(), alpha: float.NaN));
+
+        var strictSet = session.DecideConformalSet("test".AsSpan(), alpha: 0.90f); // tau = 0.90 -> smaller set
+        var looseSet = session.DecideConformalSet("test".AsSpan(), alpha: 0.01f);  // tau = 0.01 -> larger set
+        Assert.True(looseSet.Count >= strictSet.Count);
+    }
+
+    [Fact]
+    public void LoadCheckpoint_CorruptV2ConformalHeader_ThrowsInvalidDataException()
+    {
+        using var ms = new MemoryStream();
+        using (var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(0x52564C43u);
+            writer.Write(2);
+            writer.Write(64);
+            writer.Write(32);
+            writer.Write(4);
+            writer.Write(0.5f);  // qHat
+            writer.Write(0.05f); // alpha
+            writer.Write(-5);    // invalid negative calCount
+        }
+        ms.Position = 0;
+
+        using var session = new ClavierSession(embeddingDim: 64, hiddenDim: 32, numActions: 4);
+        Assert.Throws<InvalidDataException>(() => session.LoadCheckpoint(ms));
+    }
+
+    [Fact]
+    public void SoftmaxAndArgmax_WithNaNLogits_FallsBackToUniformDistribution()
+    {
+        Span<float> logits = [1.0f, float.NaN, 2.0f];
+        Span<float> probs = stackalloc float[3];
+        var decision = ClavierDecisionHead.SoftmaxAndArgmax(logits, probs, 2.0f);
+
+        Assert.Equal(0u, decision.ActionId);
+        Assert.Equal(1.0f / 3.0f, decision.Confidence, precision: 5);
+        for (int i = 0; i < 3; i++)
+        {
+            Assert.True(float.IsFinite(probs[i]));
+            Assert.Equal(1.0f / 3.0f, probs[i], precision: 5);
+        }
+    }
 }

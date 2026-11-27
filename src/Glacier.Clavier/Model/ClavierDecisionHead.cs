@@ -155,6 +155,35 @@ public sealed class ClavierDecisionHead : IDisposable
     internal static ClavierDecision SoftmaxAndArgmax(Span<float> scaledLogits, Span<float> probabilitiesOut, float maxLogit)
     {
         int actions = scaledLogits.Length;
+        if (actions == 0)
+        {
+            return new ClavierDecision(0, 0f);
+        }
+
+        bool validInputs = float.IsFinite(maxLogit);
+        if (validInputs)
+        {
+            for (int a = 0; a < actions; a++)
+            {
+                if (!float.IsFinite(scaledLogits[a]))
+                {
+                    validInputs = false;
+                    break;
+                }
+            }
+        }
+
+        if (!validInputs)
+        {
+            float uniform = 1.0f / actions;
+            if (!probabilitiesOut.IsEmpty)
+            {
+                int copyLen = Math.Min(actions, probabilitiesOut.Length);
+                probabilitiesOut.Slice(0, copyLen).Fill(uniform);
+            }
+            return new ClavierDecision(0, uniform);
+        }
+
         float sumExp = 0f;
         for (int a = 0; a < actions; a++)
         {
@@ -163,7 +192,18 @@ public sealed class ClavierDecisionHead : IDisposable
             sumExp += expVal;
         }
 
-        float invSum = sumExp > 0f ? 1.0f / sumExp : 1.0f;
+        if (sumExp <= 0f || !float.IsFinite(sumExp))
+        {
+            float uniform = 1.0f / actions;
+            if (!probabilitiesOut.IsEmpty)
+            {
+                int copyLen = Math.Min(actions, probabilitiesOut.Length);
+                probabilitiesOut.Slice(0, copyLen).Fill(uniform);
+            }
+            return new ClavierDecision(0, uniform);
+        }
+
+        float invSum = 1.0f / sumExp;
         uint bestAction = 0;
         float bestProb = -1f;
 
@@ -401,7 +441,10 @@ public sealed class ClavierDecisionHead : IDisposable
         int actions = reader.ReadInt32();
         if (inDim != _inputDim || hidDim != _hiddenDim || actions != _numActions)
             throw new InvalidDataException($"DecisionHead shape mismatch: expected ({_inputDim},{_hiddenDim},{_numActions}), got ({inDim},{hidDim},{actions}).");
-        _temperature = reader.ReadSingle();
+        float temp = reader.ReadSingle();
+        if (!float.IsFinite(temp) || temp <= 0f)
+            throw new InvalidDataException($"Corrupted ClavierDecisionHead checkpoint temperature: {temp}.");
+        _temperature = temp;
         ReadFloatArray(reader, _w1);
         ReadFloatArray(reader, _b1);
         ReadFloatArray(reader, _w2);

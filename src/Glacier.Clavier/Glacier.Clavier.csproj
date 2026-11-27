@@ -13,7 +13,8 @@
 
     <!-- NuGet Package Properties -->
     <PackageId>Glacier.Clavier</PackageId>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
+    <PackageReleaseNotes>v1.2.1: 4-way FMA unrolled SimdKernels.Dot, single-lock batch inference, and atomic conformal quantile safety.</PackageReleaseNotes>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
     <Description>High-throughput native C# .NET 10 System-1 discrete decision and policy engine. Evaluates structured environment states and candidate actions, trains online calibrated policy heads, and persists weights with zero reflection.</Description>

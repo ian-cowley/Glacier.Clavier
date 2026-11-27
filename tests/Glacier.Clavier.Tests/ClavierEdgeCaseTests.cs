@@ -143,4 +143,45 @@ public class ClavierEdgeCaseTests
         Assert.Equal(trainedNoul.Probability, restoredNoul.Probability, precision: 5);
         Assert.Equal(trainedScore.Value, restoredScore.Value, precision: 4);
     }
+
+    [Fact]
+    public void SimdKernels_Dot_MatchesScalarReferenceAcrossUnrollBoundaries()
+    {
+        var rng = new Random(7);
+        for (int len = 0; len <= 131; len++)
+        {
+            float[] a = new float[len];
+            float[] b = new float[len];
+            double expected = 0.0;
+            for (int i = 0; i < len; i++)
+            {
+                a[i] = (float)(rng.NextDouble() * 4.0 - 2.0);
+                b[i] = (float)(rng.NextDouble() * 4.0 - 2.0);
+                expected += (double)a[i] * b[i];
+            }
+
+            float actual = SimdKernels.Dot(a, b);
+            Assert.Equal((float)expected, actual, tolerance: 1e-3f);
+        }
+    }
+
+    [Fact]
+    public void ClavierSession_BatchVerifyAndScore_MatchSingleCalls()
+    {
+        using var session = new ClavierSession(embeddingDim: 128, hiddenDim: 64, numActions: 4);
+        var states = new ReadOnlyMemory<char>[20];
+        for (int i = 0; i < states.Length; i++)
+            states[i] = $"State observation #{i}".AsMemory();
+
+        var verifyBatch = new ClavierNoul[states.Length];
+        var scoreBatch = new ClavierScore[states.Length];
+        session.VerifyBatch(states, verifyBatch, "ok".AsSpan(), 0.5f);
+        session.ScoreBatch(states, scoreBatch, "quality".AsSpan(), 0f, 10f);
+
+        for (int i = 0; i < states.Length; i++)
+        {
+            Assert.Equal(session.Verify(states[i].Span, "ok".AsSpan(), 0.5f).Probability, verifyBatch[i].Probability, precision: 5);
+            Assert.Equal(session.Score(states[i].Span, "quality".AsSpan(), 0f, 10f).Value, scoreBatch[i].Value, precision: 4);
+        }
+    }
 }
