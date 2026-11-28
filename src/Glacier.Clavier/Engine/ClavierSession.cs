@@ -17,7 +17,7 @@ public delegate void ClavierStateEncoder(ReadOnlySpan<char> text, Span<float> de
 
 /// <summary>
 /// High-throughput execution session for sub-millisecond System-1 discrete policy inference, online calibration training, and checkpoint persistence.
-/// Coordinates state &amp; candidate representations with lock-free concurrent forward passes.
+/// Coordinates state &amp; candidate representations with concurrent reader-locked forward passes.
 /// </summary>
 public sealed class ClavierSession : IDisposable
 {
@@ -35,15 +35,26 @@ public sealed class ClavierSession : IDisposable
     public int HiddenDim => _hiddenDim;
     public int NumActions => _numActions;
 
-    public ClavierDecisionHead DecisionHead => _decisionHead;
-    public ClavierNoulHead NoulHead => _noulHead;
-    public ClavierScoreHead ScoreHead => _scoreHead;
-
-        public float Temperature
+    public float Temperature
     {
-        get => _decisionHead.Temperature;
+        get
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            _rwLock.EnterReadLock();
+            try
+            {
+                return _decisionHead.Temperature;
+            }
+            finally
+            {
+                _rwLock.ExitReadLock();
+            }
+        }
         set
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            if (!float.IsFinite(value) || value <= 0f)
+                throw new ArgumentOutOfRangeException(nameof(value), "Temperature must be finite and positive.");
             _rwLock.EnterWriteLock();
             try
             {
@@ -121,7 +132,7 @@ public sealed class ClavierSession : IDisposable
         set
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            if (value <= 0.0f || value >= 1.0f || float.IsNaN(value))
+            if (value <= 0.0f || value >= 1.0f || !float.IsFinite(value))
                 throw new ArgumentOutOfRangeException(nameof(value), "Alpha must be in (0, 1).");
             _rwLock.EnterWriteLock();
             try
@@ -151,12 +162,15 @@ public sealed class ClavierSession : IDisposable
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
+        float qHat = ClavierCalibration.CalibrateQuantile(calibrationScores, alpha);
+        float[] scoresCopy = calibrationScores.ToArray();
+
         _rwLock.EnterWriteLock();
         try
         {
-            _conformalCalibrationScores = calibrationScores.ToArray();
+            _conformalCalibrationScores = scoresCopy;
             _conformalAlpha = alpha;
-            _conformalQuantile = ClavierCalibration.CalibrateQuantile(calibrationScores, alpha);
+            _conformalQuantile = qHat;
             _hasExplicitQuantile = false;
         }
         finally
@@ -189,11 +203,15 @@ public sealed class ClavierSession : IDisposable
         try
         {
             decision = DecideCore(stateText, candidateActions, probs);
-            if (_conformalCalibrationScores != null && _conformalCalibrationScores.Length > 0 && MathF.Abs(alpha - _conformalAlpha) > 1e-5f)
+            if (_hasExplicitQuantile)
+            {
+                qHat = _conformalQuantile;
+            }
+            else if (_conformalCalibrationScores != null && _conformalCalibrationScores.Length > 0 && MathF.Abs(alpha - _conformalAlpha) > 1e-5f)
             {
                 qHat = ClavierCalibration.CalibrateQuantile(_conformalCalibrationScores, alpha);
             }
-            else if (_conformalCalibrationScores == null && !_hasExplicitQuantile && MathF.Abs(alpha - _conformalAlpha) > 1e-5f)
+            else if (_conformalCalibrationScores == null && MathF.Abs(alpha - _conformalAlpha) > 1e-5f)
             {
                 // Uncalibrated session without explicit ConformalQuantile: derive conservative threshold tau = alpha (qHat = 1 - alpha)
                 qHat = Math.Clamp(1.0f - alpha, 0.0f, 1.0f);
@@ -409,7 +427,7 @@ public sealed class ClavierSession : IDisposable
     }
 
     /// <summary>
-    /// Batch-evaluates multiple independent environment states concurrently without lock contention.
+    /// Batch-evaluates multiple independent environment states concurrently under a single shared read lock.
     /// </summary>
     public void DecideBatch(
         ReadOnlySpan<ReadOnlyMemory<char>> states,
@@ -426,14 +444,35 @@ public sealed class ClavierSession : IDisposable
         {
             if (count >= 16)
             {
-                var stateArr = states.Slice(0, count).ToArray();
-                var candArr = candidateActions.IsEmpty ? Array.Empty<string>() : candidateActions.ToArray();
-                var outArr = new ClavierDecision[count];
-                Parallel.For(0, count, i =>
+                var stateArr = ArrayPool<ReadOnlyMemory<char>>.Shared.Rent(count);
+                var outArr = ArrayPool<ClavierDecision>.Shared.Rent(count);
+                int candCount = candidateActions.Length;
+                string[]? candArr = candCount > 0 ? ArrayPool<string>.Shared.Rent(candCount) : null;
+                try
                 {
-                    outArr[i] = DecideCore(stateArr[i].Span, candArr, Span<float>.Empty);
-                });
-                outArr.AsSpan().CopyTo(decisions);
+                    states.Slice(0, count).CopyTo(stateArr.AsSpan(0, count));
+                    if (candArr != null)
+                    {
+                        candidateActions.CopyTo(candArr.AsSpan(0, candCount));
+                    }
+                    Parallel.For(0, count, i =>
+                    {
+                        ReadOnlySpan<string> cands = candArr != null
+                            ? candArr.AsSpan(0, candCount)
+                            : ReadOnlySpan<string>.Empty;
+                        outArr[i] = DecideCore(stateArr[i].Span, cands, Span<float>.Empty);
+                    });
+                    outArr.AsSpan(0, count).CopyTo(decisions);
+                }
+                finally
+                {
+                    ArrayPool<ReadOnlyMemory<char>>.Shared.Return(stateArr, clearArray: true);
+                    ArrayPool<ClavierDecision>.Shared.Return(outArr);
+                    if (candArr != null)
+                    {
+                        ArrayPool<string>.Shared.Return(candArr, clearArray: true);
+                    }
+                }
                 return;
             }
 
@@ -529,14 +568,35 @@ public sealed class ClavierSession : IDisposable
         {
             if (count >= 16)
             {
-                var stateArr = states.Slice(0, count).ToArray();
-                string hypStr = hypothesis.ToString();
-                var outArr = new ClavierNoul[count];
-                Parallel.For(0, count, i =>
+                var stateArr = ArrayPool<ReadOnlyMemory<char>>.Shared.Rent(count);
+                var outArr = ArrayPool<ClavierNoul>.Shared.Rent(count);
+                int hypLen = hypothesis.Length;
+                char[]? hypArr = hypLen > 0 ? ArrayPool<char>.Shared.Rent(hypLen) : null;
+                try
                 {
-                    outArr[i] = VerifyCore(stateArr[i].Span, hypStr.AsSpan(), threshold);
-                });
-                outArr.AsSpan().CopyTo(results);
+                    states.Slice(0, count).CopyTo(stateArr.AsSpan(0, count));
+                    if (hypArr != null)
+                    {
+                        hypothesis.CopyTo(hypArr.AsSpan(0, hypLen));
+                    }
+                    Parallel.For(0, count, i =>
+                    {
+                        ReadOnlySpan<char> hypSpan = hypArr != null
+                            ? hypArr.AsSpan(0, hypLen)
+                            : ReadOnlySpan<char>.Empty;
+                        outArr[i] = VerifyCore(stateArr[i].Span, hypSpan, threshold);
+                    });
+                    outArr.AsSpan(0, count).CopyTo(results);
+                }
+                finally
+                {
+                    ArrayPool<ReadOnlyMemory<char>>.Shared.Return(stateArr, clearArray: true);
+                    ArrayPool<ClavierNoul>.Shared.Return(outArr);
+                    if (hypArr != null)
+                    {
+                        ArrayPool<char>.Shared.Return(hypArr);
+                    }
+                }
                 return;
             }
 
@@ -646,14 +706,35 @@ public sealed class ClavierSession : IDisposable
         {
             if (count >= 16)
             {
-                var stateArr = states.Slice(0, count).ToArray();
-                string critStr = criteria.ToString();
-                var outArr = new ClavierScore[count];
-                Parallel.For(0, count, i =>
+                var stateArr = ArrayPool<ReadOnlyMemory<char>>.Shared.Rent(count);
+                var outArr = ArrayPool<ClavierScore>.Shared.Rent(count);
+                int critLen = criteria.Length;
+                char[]? critArr = critLen > 0 ? ArrayPool<char>.Shared.Rent(critLen) : null;
+                try
                 {
-                    outArr[i] = ScoreCore(stateArr[i].Span, critStr.AsSpan(), min, max);
-                });
-                outArr.AsSpan().CopyTo(results);
+                    states.Slice(0, count).CopyTo(stateArr.AsSpan(0, count));
+                    if (critArr != null)
+                    {
+                        criteria.CopyTo(critArr.AsSpan(0, critLen));
+                    }
+                    Parallel.For(0, count, i =>
+                    {
+                        ReadOnlySpan<char> critSpan = critArr != null
+                            ? critArr.AsSpan(0, critLen)
+                            : ReadOnlySpan<char>.Empty;
+                        outArr[i] = ScoreCore(stateArr[i].Span, critSpan, min, max);
+                    });
+                    outArr.AsSpan(0, count).CopyTo(results);
+                }
+                finally
+                {
+                    ArrayPool<ReadOnlyMemory<char>>.Shared.Return(stateArr, clearArray: true);
+                    ArrayPool<ClavierScore>.Shared.Return(outArr);
+                    if (critArr != null)
+                    {
+                        ArrayPool<char>.Shared.Return(critArr);
+                    }
+                }
                 return;
             }
 
@@ -702,14 +783,22 @@ public sealed class ClavierSession : IDisposable
             }
 
             int k = candidateActions.Length;
-            float[] jointPool = ArrayPool<float>.Shared.Rent(k * _embeddingDim);
+            if ((uint)targetActionIndex >= (uint)k)
+                throw new ArgumentOutOfRangeException(nameof(targetActionIndex));
+            if (!float.IsFinite(learningRate) || learningRate <= 0f)
+                throw new ArgumentOutOfRangeException(nameof(learningRate), "Learning rate must be finite and positive.");
+            if (!float.IsFinite(labelSmoothing) || labelSmoothing < 0f || labelSmoothing > 1f)
+                throw new ArgumentOutOfRangeException(nameof(labelSmoothing), "Label smoothing must be finite and in [0, 1].");
+
+            int jointLen = checked(k * _embeddingDim);
+            float[] jointPool = ArrayPool<float>.Shared.Rent(jointLen);
             try
             {
                 for (int a = 0; a < k; a++)
                 {
                     ExtractCombinedEmbedding(stateText, candidateActions[a].AsSpan(), jointPool.AsSpan(a * _embeddingDim, _embeddingDim));
                 }
-                return _decisionHead.TrainCandidateStep(jointPool.AsSpan(0, k * _embeddingDim), k, targetActionIndex, learningRate);
+                return _decisionHead.TrainCandidateStep(jointPool.AsSpan(0, jointLen), k, targetActionIndex, learningRate, labelSmoothing);
             }
             finally
             {
@@ -795,20 +884,18 @@ public sealed class ClavierSession : IDisposable
         {
             using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
             writer.Write(0x52564C43u); // "CLVR"
-            writer.Write(2);           // format version 2
+            writer.Write(3);           // format version 3
             writer.Write(_embeddingDim);
             writer.Write(_hiddenDim);
             writer.Write(_numActions);
             writer.Write(_conformalQuantile);
             writer.Write(_conformalAlpha);
+            writer.Write((byte)(_hasExplicitQuantile ? 1 : 0));
             int calCount = _conformalCalibrationScores?.Length ?? 0;
             writer.Write(calCount);
             if (calCount > 0 && _conformalCalibrationScores != null)
             {
-                for (int i = 0; i < calCount; i++)
-                {
-                    writer.Write(_conformalCalibrationScores[i]);
-                }
+                ClavierDecisionHead.WriteFloatArray(writer, _conformalCalibrationScores);
             }
             _decisionHead.WriteWeights(writer);
             _noulHead.WriteWeights(writer);
@@ -821,7 +908,7 @@ public sealed class ClavierSession : IDisposable
     }
 
     /// <summary>
-    /// Restores all three calibrated head weights and conformal parameters from a binary checkpoint stream.
+    /// Restores all three calibrated head weights and conformal parameters from a binary checkpoint stream atomically.
     /// </summary>
     public void LoadCheckpoint(Stream stream)
     {
@@ -836,7 +923,7 @@ public sealed class ClavierSession : IDisposable
             if (magic != 0x52564C43u)
                 throw new InvalidDataException("Invalid ClavierSession checkpoint magic header.");
             int ver = reader.ReadInt32();
-            if (ver != 1 && ver != 2)
+            if (ver != 1 && ver != 2 && ver != 3)
                 throw new InvalidDataException($"Unsupported ClavierSession checkpoint version {ver}.");
             int embDim = reader.ReadInt32();
             int hidDim = reader.ReadInt32();
@@ -844,16 +931,22 @@ public sealed class ClavierSession : IDisposable
             if (embDim != _embeddingDim || hidDim != _hiddenDim || actions != _numActions)
                 throw new InvalidDataException($"Checkpoint dimensions ({embDim},{hidDim},{actions}) do not match session ({_embeddingDim},{_hiddenDim},{_numActions}).");
 
-            if (ver == 1)
-            {
-                _conformalQuantile = 0.95f;
-                _conformalAlpha = 0.05f;
-                _conformalCalibrationScores = null;
-            }
-            else if (ver == 2)
+            float targetQuantile = 0.95f;
+            float targetAlpha = 0.05f;
+            float[]? targetScores = null;
+            bool targetExplicit = false;
+
+            if (ver >= 2)
             {
                 float loadedQuantile = reader.ReadSingle();
                 float loadedAlpha = reader.ReadSingle();
+                byte explicitFlag = 0;
+                if (ver >= 3)
+                {
+                    explicitFlag = reader.ReadByte();
+                    if (explicitFlag > 1)
+                        throw new InvalidDataException($"Corrupted ClavierSession checkpoint explicit quantile flag: {explicitFlag}.");
+                }
                 int calCount = reader.ReadInt32();
                 if (!float.IsFinite(loadedQuantile) || loadedQuantile < 0f || loadedQuantile > 1f)
                     throw new InvalidDataException($"Corrupted ClavierSession checkpoint conformal quantile: {loadedQuantile}.");
@@ -862,27 +955,33 @@ public sealed class ClavierSession : IDisposable
                 if (calCount < 0 || calCount > 10_000_000)
                     throw new InvalidDataException($"Corrupted ClavierSession checkpoint calibration count: {calCount}.");
 
-                float[]? loadedScores = null;
                 if (calCount > 0)
                 {
-                    loadedScores = new float[calCount];
-                    for (int i = 0; i < calCount; i++)
-                    {
-                        float s = reader.ReadSingle();
-                        if (!float.IsFinite(s))
-                            throw new InvalidDataException("Corrupted ClavierSession checkpoint contains non-finite calibration score.");
-                        loadedScores[i] = s;
-                    }
+                    targetScores = new float[calCount];
+                    ClavierDecisionHead.ReadFloatArray(reader, targetScores);
                 }
 
-                _conformalQuantile = loadedQuantile;
-                _conformalAlpha = loadedAlpha;
-                _conformalCalibrationScores = loadedScores;
+                targetQuantile = loadedQuantile;
+                targetAlpha = loadedAlpha;
+                targetExplicit = ver >= 3
+                    ? explicitFlag != 0
+                    : (targetScores == null
+                        ? MathF.Abs(loadedQuantile - Math.Clamp(1.0f - loadedAlpha, 0.0f, 1.0f)) > 1e-5f
+                        : MathF.Abs(loadedQuantile - ClavierCalibration.CalibrateQuantile(targetScores, loadedAlpha)) > 1e-5f);
             }
 
-            _decisionHead.ReadWeights(reader);
-            _noulHead.ReadWeights(reader);
-            _scoreHead.ReadWeights(reader);
+            var stagedDecision = _decisionHead.StageReadWeights(reader);
+            var stagedNoul = _noulHead.StageReadWeights(reader);
+            var stagedScore = _scoreHead.StageReadWeights(reader);
+
+            _decisionHead.CommitWeights(in stagedDecision);
+            _noulHead.CommitWeights(in stagedNoul);
+            _scoreHead.CommitWeights(in stagedScore);
+
+            _conformalQuantile = targetQuantile;
+            _conformalAlpha = targetAlpha;
+            _conformalCalibrationScores = targetScores;
+            _hasExplicitQuantile = targetExplicit;
         }
         finally
         {

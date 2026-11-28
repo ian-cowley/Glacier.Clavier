@@ -16,9 +16,9 @@ public sealed class ClavierNoulHead
     private readonly int _hiddenDim;
     private float _temperature;
 
-    private readonly float[] _w1; // [hiddenDim, inputDim]
-    private readonly float[] _b1; // [hiddenDim]
-    private readonly float[] _w2; // [hiddenDim]
+    private float[] _w1; // [hiddenDim, inputDim]
+    private float[] _b1; // [hiddenDim]
+    private float[] _w2; // [hiddenDim]
     private float _b2;
 
     public int InputDim => _inputDim;
@@ -26,7 +26,9 @@ public sealed class ClavierNoulHead
     public float Temperature
     {
         get => _temperature;
-        set => _temperature = MathF.Max(0.01f, value);
+        set => _temperature = float.IsFinite(value) && value > 0f
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(value), "Temperature must be finite and positive.");
     }
 
     public ClavierNoulHead(int inputDim = 768, int hiddenDim = 256, float temperature = 1.0f)
@@ -36,9 +38,9 @@ public sealed class ClavierNoulHead
 
         _inputDim = inputDim;
         _hiddenDim = hiddenDim;
-        _temperature = MathF.Max(0.01f, temperature);
+        _temperature = float.IsFinite(temperature) && temperature > 0f ? temperature : 1.0f;
 
-        _w1 = new float[hiddenDim * inputDim];
+        _w1 = new float[checked(hiddenDim * inputDim)];
         _b1 = new float[hiddenDim];
         _w2 = new float[hiddenDim];
         _b2 = 0f;
@@ -81,6 +83,8 @@ public sealed class ClavierNoulHead
             throw new ArgumentException($"State embedding length {stateEmbedding.Length} is less than input dimension {_inputDim}.");
         if (hiddenBuffer.Length < _hiddenDim)
             throw new ArgumentException($"Hidden buffer length {hiddenBuffer.Length} is less than hidden dimension {_hiddenDim}.");
+        if (float.IsNaN(threshold))
+            throw new ArgumentOutOfRangeException(nameof(threshold), "Threshold cannot be NaN.");
 
         var stateSlice = stateEmbedding.Slice(0, _inputDim);
         for (int h = 0; h < _hiddenDim; h++)
@@ -106,14 +110,16 @@ public sealed class ClavierNoulHead
     {
         if (stateEmbedding.Length < _inputDim)
             throw new ArgumentException($"State embedding length {stateEmbedding.Length} < {_inputDim}.");
-        if (learningRate <= 0f)
-            throw new ArgumentOutOfRangeException(nameof(learningRate));
+        if (!float.IsFinite(learningRate) || learningRate <= 0f)
+            throw new ArgumentOutOfRangeException(nameof(learningRate), "Learning rate must be finite and positive.");
+
+        var stateSlice = stateEmbedding.Slice(0, _inputDim);
+        ClavierDecisionHead.EnsureFinite(stateSlice, nameof(stateEmbedding));
 
         float[]? rented = null;
         Span<float> hidden = _hiddenDim <= 512 ? stackalloc float[_hiddenDim] : (rented = ArrayPool<float>.Shared.Rent(_hiddenDim)).AsSpan(0, _hiddenDim);
         try
         {
-            var stateSlice = stateEmbedding.Slice(0, _inputDim);
             for (int h = 0; h < _hiddenDim; h++)
             {
                 float acc = SimdKernels.Dot(stateSlice, _w1.AsSpan(h * _inputDim, _inputDim)) + _b1[h];
@@ -125,7 +131,7 @@ public sealed class ClavierNoulHead
             float prob = 1.0f / (1.0f + MathF.Exp(-logit));
             float y = targetAffirmative ? 1.0f : 0.0f;
 
-            float loss = -(y * MathF.Log(MathF.Max(prob, 1e-7f)) + (1.0f - y) * MathF.Log(MathF.Max(1.0f - prob, 1e-7f)));
+            float loss = MathF.Max(logit, 0.0f) - y * logit + ClavierDecisionHead.Log1p(MathF.Exp(-MathF.Abs(logit)));
             float dLogit = (prob - y) * invT;
 
             for (int h = 0; h < _hiddenDim; h++)
@@ -177,7 +183,25 @@ public sealed class ClavierNoulHead
         writer.Write(_b2);
     }
 
-    internal void ReadWeights(BinaryReader reader)
+    internal readonly struct StagedWeights
+    {
+        public readonly float Temperature;
+        public readonly float[] W1;
+        public readonly float[] B1;
+        public readonly float[] W2;
+        public readonly float B2;
+
+        public StagedWeights(float temperature, float[] w1, float[] b1, float[] w2, float b2)
+        {
+            Temperature = temperature;
+            W1 = w1;
+            B1 = b1;
+            W2 = w2;
+            B2 = b2;
+        }
+    }
+
+    internal StagedWeights StageReadWeights(BinaryReader reader)
     {
         uint magic = reader.ReadUInt32();
         if (magic != 0x484E4C43u)
@@ -186,10 +210,37 @@ public sealed class ClavierNoulHead
         int hidDim = reader.ReadInt32();
         if (inDim != _inputDim || hidDim != _hiddenDim)
             throw new InvalidDataException($"NoulHead shape mismatch: expected ({_inputDim},{_hiddenDim}), got ({inDim},{hidDim}).");
-        _temperature = reader.ReadSingle();
-        ClavierDecisionHead.ReadFloatArray(reader, _w1);
-        ClavierDecisionHead.ReadFloatArray(reader, _b1);
-        ClavierDecisionHead.ReadFloatArray(reader, _w2);
-        _b2 = reader.ReadSingle();
+        float temp = reader.ReadSingle();
+        if (!float.IsFinite(temp) || temp <= 0f)
+            throw new InvalidDataException($"Corrupted ClavierNoulHead checkpoint temperature: {temp}.");
+
+        float[] w1 = new float[_w1.Length];
+        float[] b1 = new float[_b1.Length];
+        float[] w2 = new float[_w2.Length];
+
+        ClavierDecisionHead.ReadFloatArray(reader, w1);
+        ClavierDecisionHead.ReadFloatArray(reader, b1);
+        ClavierDecisionHead.ReadFloatArray(reader, w2);
+
+        float b2 = reader.ReadSingle();
+        if (!float.IsFinite(b2))
+            throw new InvalidDataException($"Corrupted ClavierNoulHead checkpoint bias: {b2}.");
+
+        return new StagedWeights(temp, w1, b1, w2, b2);
+    }
+
+    internal void CommitWeights(in StagedWeights staged)
+    {
+        _w1 = staged.W1;
+        _b1 = staged.B1;
+        _w2 = staged.W2;
+        _temperature = staged.Temperature;
+        _b2 = staged.B2;
+    }
+
+    internal void ReadWeights(BinaryReader reader)
+    {
+        StagedWeights staged = StageReadWeights(reader);
+        CommitWeights(in staged);
     }
 }

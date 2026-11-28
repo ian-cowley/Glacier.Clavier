@@ -4,6 +4,7 @@ using System;
 using System.Buffers;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
 /// <summary>
@@ -18,15 +19,15 @@ public sealed class ClavierDecisionHead : IDisposable
     private float _temperature;
 
     // Layer 1: [hiddenDim, inputDim] + bias [hiddenDim]
-    private readonly float[] _w1;
-    private readonly float[] _b1;
+    private float[] _w1;
+    private float[] _b1;
 
     // Layer 2 (fixed action slots): [numActions, hiddenDim] + bias [numActions]
-    private readonly float[] _w2;
-    private readonly float[] _b2;
+    private float[] _w2;
+    private float[] _b2;
 
     // Dynamic text candidate compatibility projection: [hiddenDim] + bias
-    private readonly float[] _wCand;
+    private float[] _wCand;
     private float _bCand;
 
     public int InputDim => _inputDim;
@@ -35,7 +36,9 @@ public sealed class ClavierDecisionHead : IDisposable
     public float Temperature
     {
         get => _temperature;
-        set => _temperature = value > 0f ? value : throw new ArgumentOutOfRangeException(nameof(value), "Temperature must be positive.");
+        set => _temperature = float.IsFinite(value) && value > 0f
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(value), "Temperature must be finite and positive.");
     }
 
     public ClavierDecisionHead(int inputDim = 768, int hiddenDim = 256, int numActions = 64, float temperature = 1.0f)
@@ -46,11 +49,11 @@ public sealed class ClavierDecisionHead : IDisposable
         _inputDim = inputDim;
         _hiddenDim = hiddenDim;
         _numActions = numActions;
-        _temperature = temperature > 0f ? temperature : 1.0f;
+        _temperature = float.IsFinite(temperature) && temperature > 0f ? temperature : 1.0f;
 
-        _w1 = new float[hiddenDim * inputDim];
+        _w1 = new float[checked(hiddenDim * inputDim)];
         _b1 = new float[hiddenDim];
-        _w2 = new float[numActions * hiddenDim];
+        _w2 = new float[checked(numActions * hiddenDim)];
         _b2 = new float[numActions];
         _wCand = new float[hiddenDim];
         _bCand = 0f;
@@ -238,8 +241,13 @@ public sealed class ClavierDecisionHead : IDisposable
             throw new ArgumentException($"State embedding length {stateEmbedding.Length} < {_inputDim}.");
         if ((uint)targetAction >= (uint)_numActions)
             throw new ArgumentOutOfRangeException(nameof(targetAction));
-        if (learningRate <= 0f)
-            throw new ArgumentOutOfRangeException(nameof(learningRate));
+        if (!float.IsFinite(learningRate) || learningRate <= 0f)
+            throw new ArgumentOutOfRangeException(nameof(learningRate), "Learning rate must be finite and positive.");
+        if (!float.IsFinite(labelSmoothing) || labelSmoothing < 0f || labelSmoothing > 1f)
+            throw new ArgumentOutOfRangeException(nameof(labelSmoothing), "Label smoothing must be finite and in [0, 1].");
+
+        var stateSlice = stateEmbedding.Slice(0, _inputDim);
+        EnsureFinite(stateSlice, nameof(stateEmbedding));
 
         float[]? rentedHidden = null;
         float[]? rentedProbs = null;
@@ -251,7 +259,6 @@ public sealed class ClavierDecisionHead : IDisposable
 
         try
         {
-            var stateSlice = stateEmbedding.Slice(0, _inputDim);
             for (int h = 0; h < _hiddenDim; h++)
             {
                 float pre = SimdKernels.Dot(stateSlice, _w1.AsSpan(h * _inputDim, _inputDim)) + _b1[h];
@@ -325,15 +332,25 @@ public sealed class ClavierDecisionHead : IDisposable
         ReadOnlySpan<float> candidateJointEmbeddings,
         int candidateCount,
         int targetCandidateIndex,
-        float learningRate = 0.05f)
+        float learningRate = 0.05f,
+        float labelSmoothing = 0.0f)
     {
         if (candidateCount <= 0) throw new ArgumentOutOfRangeException(nameof(candidateCount));
         if ((uint)targetCandidateIndex >= (uint)candidateCount) throw new ArgumentOutOfRangeException(nameof(targetCandidateIndex));
-        if (candidateJointEmbeddings.Length < candidateCount * _inputDim)
-            throw new ArgumentException("Insufficient joint embeddings buffer length.");
+        if (!float.IsFinite(learningRate) || learningRate <= 0f)
+            throw new ArgumentOutOfRangeException(nameof(learningRate), "Learning rate must be finite and positive.");
+        if (!float.IsFinite(labelSmoothing) || labelSmoothing < 0f || labelSmoothing > 1f)
+            throw new ArgumentOutOfRangeException(nameof(labelSmoothing), "Label smoothing must be finite and in [0, 1].");
 
-        float[] hiddens = ArrayPool<float>.Shared.Rent(candidateCount * _hiddenDim);
+        int requiredLen = checked(candidateCount * _inputDim);
+        if (candidateJointEmbeddings.Length < requiredLen)
+            throw new ArgumentException("Insufficient joint embeddings buffer length.");
+        EnsureFinite(candidateJointEmbeddings.Slice(0, requiredLen), nameof(candidateJointEmbeddings));
+
+        int totalHiddenLen = checked(candidateCount * _hiddenDim);
+        float[] hiddens = ArrayPool<float>.Shared.Rent(totalHiddenLen);
         float[] probs = ArrayPool<float>.Shared.Rent(candidateCount);
+        float[]? rentedDWCand = null;
         try
         {
             float maxLogit = float.NegativeInfinity;
@@ -356,17 +373,20 @@ public sealed class ClavierDecisionHead : IDisposable
 
             float invSum = 1.0f / MathF.Max(sumExp, 1e-12f);
             float invT = 1.0f / _temperature;
-            float targetProb = MathF.Max(probs[targetCandidateIndex] * invSum, 1e-9f);
-            float loss = -MathF.Log(targetProb);
+            float smooth = labelSmoothing / candidateCount;
+            float loss = 0f;
 
-            Span<float> dWCand = _hiddenDim <= 512 ? stackalloc float[_hiddenDim] : new float[_hiddenDim];
+            Span<float> dWCand = _hiddenDim <= 512
+                ? stackalloc float[_hiddenDim]
+                : (rentedDWCand = ArrayPool<float>.Shared.Rent(_hiddenDim)).AsSpan(0, _hiddenDim);
             dWCand.Clear();
             float dBCand = 0f;
 
             for (int c = 0; c < candidateCount; c++)
             {
                 float p = probs[c] * invSum;
-                float y = c == targetCandidateIndex ? 1.0f : 0.0f;
+                float y = (c == targetCandidateIndex ? 1.0f - labelSmoothing : 0.0f) + smooth;
+                loss -= y * MathF.Log(MathF.Max(p, 1e-9f));
                 float dLogit = (p - y) * invT;
 
                 var emb = candidateJointEmbeddings.Slice(c * _inputDim, _inputDim);
@@ -401,6 +421,7 @@ public sealed class ClavierDecisionHead : IDisposable
         {
             ArrayPool<float>.Shared.Return(hiddens);
             ArrayPool<float>.Shared.Return(probs);
+            if (rentedDWCand != null) ArrayPool<float>.Shared.Return(rentedDWCand);
         }
     }
 
@@ -431,7 +452,36 @@ public sealed class ClavierDecisionHead : IDisposable
         writer.Write(_bCand);
     }
 
-    internal void ReadWeights(BinaryReader reader)
+    internal readonly struct StagedWeights
+    {
+        public readonly float Temperature;
+        public readonly float[] W1;
+        public readonly float[] B1;
+        public readonly float[] W2;
+        public readonly float[] B2;
+        public readonly float[] WCand;
+        public readonly float BCand;
+
+        public StagedWeights(
+            float temperature,
+            float[] w1,
+            float[] b1,
+            float[] w2,
+            float[] b2,
+            float[] wCand,
+            float bCand)
+        {
+            Temperature = temperature;
+            W1 = w1;
+            B1 = b1;
+            W2 = w2;
+            B2 = b2;
+            WCand = wCand;
+            BCand = bCand;
+        }
+    }
+
+    internal StagedWeights StageReadWeights(BinaryReader reader)
     {
         uint magic = reader.ReadUInt32();
         if (magic != 0x48444C43u)
@@ -444,25 +494,105 @@ public sealed class ClavierDecisionHead : IDisposable
         float temp = reader.ReadSingle();
         if (!float.IsFinite(temp) || temp <= 0f)
             throw new InvalidDataException($"Corrupted ClavierDecisionHead checkpoint temperature: {temp}.");
-        _temperature = temp;
-        ReadFloatArray(reader, _w1);
-        ReadFloatArray(reader, _b1);
-        ReadFloatArray(reader, _w2);
-        ReadFloatArray(reader, _b2);
-        ReadFloatArray(reader, _wCand);
-        _bCand = reader.ReadSingle();
+
+        float[] w1 = new float[_w1.Length];
+        float[] b1 = new float[_b1.Length];
+        float[] w2 = new float[_w2.Length];
+        float[] b2 = new float[_b2.Length];
+        float[] wCand = new float[_wCand.Length];
+
+        ReadFloatArray(reader, w1);
+        ReadFloatArray(reader, b1);
+        ReadFloatArray(reader, w2);
+        ReadFloatArray(reader, b2);
+        ReadFloatArray(reader, wCand);
+
+        float bCand = reader.ReadSingle();
+        if (!float.IsFinite(bCand))
+            throw new InvalidDataException($"Corrupted ClavierDecisionHead checkpoint candidate bias: {bCand}.");
+
+        return new StagedWeights(temp, w1, b1, w2, b2, wCand, bCand);
+    }
+
+    internal void CommitWeights(in StagedWeights staged)
+    {
+        _w1 = staged.W1;
+        _b1 = staged.B1;
+        _w2 = staged.W2;
+        _b2 = staged.B2;
+        _wCand = staged.WCand;
+        _temperature = staged.Temperature;
+        _bCand = staged.BCand;
+    }
+
+    internal void ReadWeights(BinaryReader reader)
+    {
+        StagedWeights staged = StageReadWeights(reader);
+        CommitWeights(in staged);
     }
 
     internal static void WriteFloatArray(BinaryWriter writer, float[] values)
     {
+        if (values.Length == 0) return;
+
+        if (BitConverter.IsLittleEndian)
+        {
+            writer.Write(MemoryMarshal.AsBytes(values.AsSpan()));
+            return;
+        }
+
         for (int i = 0; i < values.Length; i++)
+        {
             writer.Write(values[i]);
+        }
     }
 
     internal static void ReadFloatArray(BinaryReader reader, float[] values)
     {
+        if (values.Length == 0) return;
+
+        if (BitConverter.IsLittleEndian)
+        {
+            Span<byte> dest = MemoryMarshal.AsBytes(values.AsSpan());
+            while (!dest.IsEmpty)
+            {
+                int read = reader.Read(dest);
+                if (read == 0)
+                    throw new EndOfStreamException("Unexpected end of stream while reading weight array.");
+                dest = dest.Slice(read);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < values.Length; i++)
+            {
+                values[i] = reader.ReadSingle();
+            }
+        }
+
         for (int i = 0; i < values.Length; i++)
-            values[i] = reader.ReadSingle();
+        {
+            if (!float.IsFinite(values[i]))
+                throw new InvalidDataException($"Corrupted checkpoint contains non-finite float value at index {i}.");
+        }
+    }
+
+    internal static void EnsureFinite(ReadOnlySpan<float> values, string paramName)
+    {
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (!float.IsFinite(values[i]))
+                throw new ArgumentException($"Input contains non-finite value at index {i}.", paramName);
+        }
+    }
+
+    internal static float Log1p(float x)
+    {
+        if (x == 0.0f) return 0.0f;
+        double xd = x;
+        double u = 1.0 + xd;
+        if (u == 1.0) return x;
+        return (float)(Math.Log(u) * (xd / (u - 1.0)));
     }
 
     public void Dispose() { }

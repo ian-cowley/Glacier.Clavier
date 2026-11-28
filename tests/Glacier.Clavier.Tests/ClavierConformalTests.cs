@@ -189,10 +189,12 @@ public class ClavierConformalTests
             writer.Write(8);           // numActions
 
             // Dummy weights for decision, noul, and score heads
-            using var dummySession = new ClavierSession(embeddingDim: 64, hiddenDim: 32, numActions: 8);
-            dummySession.DecisionHead.WriteWeights(writer);
-            dummySession.NoulHead.WriteWeights(writer);
-            dummySession.ScoreHead.WriteWeights(writer);
+            using var dummyDecisionHead = new ClavierDecisionHead(inputDim: 64, hiddenDim: 32, numActions: 8);
+            var dummyNoulHead = new ClavierNoulHead(inputDim: 64, hiddenDim: 32);
+            var dummyScoreHead = new ClavierScoreHead(inputDim: 64, hiddenDim: 32);
+            dummyDecisionHead.WriteWeights(writer);
+            dummyNoulHead.WriteWeights(writer);
+            dummyScoreHead.WriteWeights(writer);
         }
 
         ms.Position = 0;

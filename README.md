@@ -66,9 +66,9 @@ session.LoadCheckpoint(fs);
 
 ---
 
-## 3. Blittable 8-Byte Structs & Lock-Free Batching
+## 3. Blittable 8-Byte Structs & Concurrent Batching
 
-All three primitives emit 8-byte blittable structs (`Marshal.SizeOf<T>() == 8`) with lock-free concurrent forward execution across `DecideBatch`, `VerifyBatch`, and `ScoreBatch`:
+All three primitives emit 8-byte blittable structs (`Marshal.SizeOf<T>() == 8`) with concurrent reader-locked forward execution across `DecideBatch`, `VerifyBatch`, and `ScoreBatch`:
 
 ```csharp
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
@@ -89,6 +89,7 @@ public readonly struct ClavierScore    // float Value (4B) + float Confidence (4
 dotnet build Glacier.Clavier.slnx -c Release
 dotnet test Glacier.Clavier.slnx -c Release
 python scripts/security_check.py Glacier.Clavier
+glacier security-check Glacier.Clavier
 ```
 
 ---

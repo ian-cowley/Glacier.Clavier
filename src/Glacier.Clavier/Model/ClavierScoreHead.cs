@@ -17,11 +17,11 @@ public sealed class ClavierScoreHead
     private readonly int _hiddenDim;
     private float _temperature;
 
-    private readonly float[] _w1;    // [hiddenDim, inputDim]
-    private readonly float[] _b1;    // [hiddenDim]
-    private readonly float[] _wVal;  // [hiddenDim]
+    private float[] _w1;    // [hiddenDim, inputDim]
+    private float[] _b1;    // [hiddenDim]
+    private float[] _wVal;  // [hiddenDim]
     private float _bVal;
-    private readonly float[] _wConf; // [hiddenDim]
+    private float[] _wConf; // [hiddenDim]
     private float _bConf;
 
     public int InputDim => _inputDim;
@@ -29,7 +29,9 @@ public sealed class ClavierScoreHead
     public float Temperature
     {
         get => _temperature;
-        set => _temperature = MathF.Max(0.01f, value);
+        set => _temperature = float.IsFinite(value) && value > 0f
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(value), "Temperature must be finite and positive.");
     }
 
     public ClavierScoreHead(int inputDim = 768, int hiddenDim = 256, float temperature = 1.0f)
@@ -39,9 +41,9 @@ public sealed class ClavierScoreHead
 
         _inputDim = inputDim;
         _hiddenDim = hiddenDim;
-        _temperature = MathF.Max(0.01f, temperature);
+        _temperature = float.IsFinite(temperature) && temperature > 0f ? temperature : 1.0f;
 
-        _w1 = new float[hiddenDim * inputDim];
+        _w1 = new float[checked(hiddenDim * inputDim)];
         _b1 = new float[hiddenDim];
         _wVal = new float[hiddenDim];
         _wConf = new float[hiddenDim];
@@ -88,8 +90,8 @@ public sealed class ClavierScoreHead
             throw new ArgumentException($"State embedding length {stateEmbedding.Length} is less than input dimension {_inputDim}.");
         if (hiddenBuffer.Length < _hiddenDim)
             throw new ArgumentException($"Hidden buffer length {hiddenBuffer.Length} is less than hidden dimension {_hiddenDim}.");
-        if (max < min)
-            throw new ArgumentException($"Max ({max}) cannot be less than min ({min}).");
+        if (!float.IsFinite(min) || !float.IsFinite(max) || max < min)
+            throw new ArgumentException($"Invalid score range [{min}, {max}]: min and max must be finite with max >= min.");
 
         var stateSlice = stateEmbedding.Slice(0, _inputDim);
         for (int h = 0; h < _hiddenDim; h++)
@@ -106,13 +108,13 @@ public sealed class ClavierScoreHead
         float normVal = 1.0f / (1.0f + MathF.Exp(-valLogit / _temperature));
         float confidence = 1.0f / (1.0f + MathF.Exp(-confLogit));
 
-        float scaledValue = min + (max - min) * normVal;
+        float scaledValue = Math.Clamp((float)((double)min + ((double)max - min) * normVal), min, max);
         return new ClavierScore(scaledValue, confidence);
     }
 
     /// <summary>
     /// Performs a single supervised gradient update toward targetValue in [min, max] and calibrates epistemic confidence.
-    /// Returns normalized squared error loss.
+    /// Returns the pre-update binary cross-entropy loss on the normalized [0, 1] score.
     /// </summary>
     public float TrainStep(
         ReadOnlySpan<float> stateEmbedding,
@@ -123,18 +125,23 @@ public sealed class ClavierScoreHead
     {
         if (stateEmbedding.Length < _inputDim)
             throw new ArgumentException($"State embedding length {stateEmbedding.Length} < {_inputDim}.");
-        if (max <= min)
-            throw new ArgumentException($"Max ({max}) must be greater than min ({min}).");
-        if (learningRate <= 0f)
-            throw new ArgumentOutOfRangeException(nameof(learningRate));
+        if (!float.IsFinite(min) || !float.IsFinite(max) || max <= min)
+            throw new ArgumentException($"Invalid score range ({min}, {max}): min and max must be finite with max > min.");
+        if (!float.IsFinite(targetValue))
+            throw new ArgumentOutOfRangeException(nameof(targetValue), "Target value must be finite.");
+        if (!float.IsFinite(learningRate) || learningRate <= 0f)
+            throw new ArgumentOutOfRangeException(nameof(learningRate), "Learning rate must be finite and positive.");
 
-        float targetNorm = Math.Clamp((targetValue - min) / (max - min), 1e-4f, 1.0f - 1e-4f);
+        var stateSlice = stateEmbedding.Slice(0, _inputDim);
+        ClavierDecisionHead.EnsureFinite(stateSlice, nameof(stateEmbedding));
+
+        double denom = (double)max - min;
+        float targetNorm = Math.Clamp((float)(((double)targetValue - min) / denom), 1e-4f, 1.0f - 1e-4f);
 
         float[]? rented = null;
         Span<float> hidden = _hiddenDim <= 512 ? stackalloc float[_hiddenDim] : (rented = ArrayPool<float>.Shared.Rent(_hiddenDim)).AsSpan(0, _hiddenDim);
         try
         {
-            var stateSlice = stateEmbedding.Slice(0, _inputDim);
             for (int h = 0; h < _hiddenDim; h++)
             {
                 float acc = SimdKernels.Dot(stateSlice, _w1.AsSpan(h * _inputDim, _inputDim)) + _b1[h];
@@ -149,7 +156,7 @@ public sealed class ClavierScoreHead
             float predConf = 1.0f / (1.0f + MathF.Exp(-confLogit));
 
             float diff = predNorm - targetNorm;
-            float loss = diff * diff;
+            float loss = MathF.Max(valLogit, 0.0f) - targetNorm * valLogit + ClavierDecisionHead.Log1p(MathF.Exp(-MathF.Abs(valLogit)));
 
             // BCE-style logit gradient for smooth bounded regression + self-calibrated confidence target (1 - |error|)
             float dVal = diff * invT;
@@ -212,7 +219,36 @@ public sealed class ClavierScoreHead
         writer.Write(_bConf);
     }
 
-    internal void ReadWeights(BinaryReader reader)
+    internal readonly struct StagedWeights
+    {
+        public readonly float Temperature;
+        public readonly float[] W1;
+        public readonly float[] B1;
+        public readonly float[] WVal;
+        public readonly float BVal;
+        public readonly float[] WConf;
+        public readonly float BConf;
+
+        public StagedWeights(
+            float temperature,
+            float[] w1,
+            float[] b1,
+            float[] wVal,
+            float bVal,
+            float[] wConf,
+            float bConf)
+        {
+            Temperature = temperature;
+            W1 = w1;
+            B1 = b1;
+            WVal = wVal;
+            BVal = bVal;
+            WConf = wConf;
+            BConf = bConf;
+        }
+    }
+
+    internal StagedWeights StageReadWeights(BinaryReader reader)
     {
         uint magic = reader.ReadUInt32();
         if (magic != 0x48534C43u)
@@ -221,12 +257,43 @@ public sealed class ClavierScoreHead
         int hidDim = reader.ReadInt32();
         if (inDim != _inputDim || hidDim != _hiddenDim)
             throw new InvalidDataException($"ScoreHead shape mismatch: expected ({_inputDim},{_hiddenDim}), got ({inDim},{hidDim}).");
-        _temperature = reader.ReadSingle();
-        ClavierDecisionHead.ReadFloatArray(reader, _w1);
-        ClavierDecisionHead.ReadFloatArray(reader, _b1);
-        ClavierDecisionHead.ReadFloatArray(reader, _wVal);
-        _bVal = reader.ReadSingle();
-        ClavierDecisionHead.ReadFloatArray(reader, _wConf);
-        _bConf = reader.ReadSingle();
+        float temp = reader.ReadSingle();
+        if (!float.IsFinite(temp) || temp <= 0f)
+            throw new InvalidDataException($"Corrupted ClavierScoreHead checkpoint temperature: {temp}.");
+
+        float[] w1 = new float[_w1.Length];
+        float[] b1 = new float[_b1.Length];
+        float[] wVal = new float[_wVal.Length];
+        float[] wConf = new float[_wConf.Length];
+
+        ClavierDecisionHead.ReadFloatArray(reader, w1);
+        ClavierDecisionHead.ReadFloatArray(reader, b1);
+        ClavierDecisionHead.ReadFloatArray(reader, wVal);
+        float bVal = reader.ReadSingle();
+        if (!float.IsFinite(bVal))
+            throw new InvalidDataException($"Corrupted ClavierScoreHead checkpoint value bias: {bVal}.");
+        ClavierDecisionHead.ReadFloatArray(reader, wConf);
+        float bConf = reader.ReadSingle();
+        if (!float.IsFinite(bConf))
+            throw new InvalidDataException($"Corrupted ClavierScoreHead checkpoint confidence bias: {bConf}.");
+
+        return new StagedWeights(temp, w1, b1, wVal, bVal, wConf, bConf);
+    }
+
+    internal void CommitWeights(in StagedWeights staged)
+    {
+        _w1 = staged.W1;
+        _b1 = staged.B1;
+        _wVal = staged.WVal;
+        _wConf = staged.WConf;
+        _temperature = staged.Temperature;
+        _bVal = staged.BVal;
+        _bConf = staged.BConf;
+    }
+
+    internal void ReadWeights(BinaryReader reader)
+    {
+        StagedWeights staged = StageReadWeights(reader);
+        CommitWeights(in staged);
     }
 }
